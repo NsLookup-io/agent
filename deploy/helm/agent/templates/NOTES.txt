@@ -1,0 +1,13 @@
+The nslookup.io agent runs in the namespace {{ .Release.Namespace }}.
+{{- if or .Values.joinCode .Values.existingJoinSecret }}
+It joins nslookup.io with the join code once, then keeps its identity in the Secret nslookup-agent-identity.
+{{- else }}
+No join code was given: the agent works only if it joined before (its identity is the Secret nslookup-agent-identity).
+{{- end }}
+{{- $namespaces := include "agent.namespaces" . | fromJsonArray }}
+It reads the Ingresses of {{ if $namespaces }}the namespaces {{ join ", " $namespaces }}{{ else }}every namespace{{ end }} and may write their TLS secrets.
+
+Its log:   kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "agent.fullname" . }}
+Uninstall: helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}, then
+           kubectl delete secret nslookup-agent-identity -n {{ .Release.Namespace }}
+           (the TLS secrets it wrote stay as they are)

@@ -1,0 +1,29 @@
+# The join code from the portal (nsj_…), used once: the agent then keeps its identity in the Secret
+# nslookup-agent-identity of the release namespace, and ignores the code. Give it with --set-string joinCode=<code>.
+joinCode: ""
+
+# Instead of joinCode: the name of a Secret in the release namespace whose key joinCode holds the code.
+existingJoinSecret: ""
+
+# The agent's name in the portal (default: the name given with the join code, else the pod's name).
+name: ""
+
+# The nslookup.io server, an https:// origin (default: https://agents.nslookup.io).
+server: ""
+
+# The namespaces whose Ingresses the agent reads and whose TLS secrets it may write. Empty: every namespace, through a
+# ClusterRole. Else one Role per namespace, for example --set "namespaces={shop,blog}".
+namespaces: []
+
+image:
+  repository: ghcr.io/nslookup-io/agent
+  # Default: the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi

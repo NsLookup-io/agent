@@ -1,0 +1,127 @@
+# Releases, built by .github/workflows/release.yml on a tag v<version>: the Linux binaries (amd64, arm64) in archives,
+# .deb and .rpm packages, checksums.txt, an SBOM per archive, install.sh, and the multi-arch image
+# ghcr.io/nslookup-io/agent:<version> and :<major>. checksums.txt and the image are signed with cosign, keyless, as
+# the release workflow (GitHub's OIDC identity). The Helm chart is pushed and signed by the workflow itself.
+version: 2
+
+project_name: nslookup-agent
+
+builds:
+  - id: nslookup-agent
+    main: ./cmd/nslookup-agent
+    binary: nslookup-agent
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/nslookup-io/agent/internal/version.Version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  # nslookup-agent_<version>_linux_<arch>.tar.gz: the binary and the systemd unit at the top (install.sh reads both).
+  - id: archives
+    ids: [nslookup-agent]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    builds_info:
+      owner: root
+      group: root
+    files:
+      - LICENSE
+      - README.md
+      - src: deploy/systemd/nslookup-agent.service
+        strip_parent: true
+        info:
+          owner: root
+          group: root
+          mode: 0644
+
+checksum:
+  name_template: checksums.txt
+  extra_files:
+    - glob: ./install.sh
+
+sboms:
+  - artifacts: archive
+
+nfpms:
+  # The same layout as install.sh: /usr/local/bin/nslookup-agent, so one unit file serves both.
+  - id: packages
+    ids: [nslookup-agent]
+    package_name: nslookup-agent
+    vendor: nslookup.io
+    homepage: https://github.com/nslookup-io/agent
+    maintainer: nslookup.io
+    description: >-
+      The nslookup.io agent: reports the sites of nginx, Apache and HAProxy on this server to nslookup.io and installs
+      the certificates nslookup.io Certificate Autopilot renews for them.
+    license: Apache-2.0
+    formats: [deb, rpm]
+    bindir: /usr/local/bin
+    contents:
+      - src: deploy/systemd/nslookup-agent.service
+        dst: /usr/lib/systemd/system/nslookup-agent.service
+        file_info:
+          mode: 0644
+      - dst: /var/lib/nslookup-agent
+        type: dir
+        file_info:
+          mode: 0700
+      - dst: /etc/nslookup-agent
+        type: dir
+        file_info:
+          mode: 0755
+    scripts:
+      postinstall: deploy/packaging/postinstall.sh
+      preremove: deploy/packaging/preremove.sh
+
+dockers_v2:
+  # The Dockerfile's release stage copies $TARGETPLATFORM/nslookup-agent from this context.
+  - id: image
+    ids: [nslookup-agent]
+    dockerfile: Dockerfile
+    flags:
+      - --target=release
+    images:
+      - ghcr.io/nslookup-io/agent
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}{{ .Major }}{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    sbom: true
+    labels:
+      org.opencontainers.image.title: nslookup-agent
+      org.opencontainers.image.description: The nslookup.io agent
+      org.opencontainers.image.source: https://github.com/nslookup-io/agent
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.licenses: Apache-2.0
+
+signs:
+  # checksums.txt.sigstore.json: cosign verify-blob --bundle checksums.txt.sigstore.json ... checksums.txt (README).
+  - cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+
+docker_signs:
+  # The images of dockers_v2, by digest.
+  - cmd: cosign
+    args:
+      - sign
+      - "${artifact}@${digest}"
+      - "--yes"
+    output: true
+
+release:
+  prerelease: auto
+  extra_files:
+    - glob: ./install.sh

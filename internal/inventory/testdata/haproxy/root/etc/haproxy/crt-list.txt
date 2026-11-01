@@ -1,0 +1,3 @@
+# <certificate> [<ssl options>] [<sni filters>]
+/etc/ssl/haproxy/api.pem [alpn h2 ssl-min-ver TLSv1.2] api.shop.example
+mail.pem mail.example

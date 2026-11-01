@@ -1,0 +1,239 @@
+{
+  "version": 4,
+  "about": "Test vectors of the nslookup install agent protocol (/agent/v1). Every key and join code in this file is a fixed test value used nowhere else. Both the engine and the agent test against this file; it changes only with the protocol, and every change raises version (2: answers name the agent and the request line, and a join proves its code without sending the secret; 3: the join proof and the join MAC are labelled NSA1-JOIN-REQ / NSA1-JOIN-ANS; 4: a removed agent gets a signed 403 {\"code\":\"agent_removed\"}, every answer names the key that signed it (signedBy), and heartbeat answers list serverSignPublicKeys for a server key rollover).",
+  "format": {
+    "encoding": "Raw keys, seeds, signatures, nonces, salts, shared secrets, bundle keys and sealed parts are base64url without padding; sha256 values are lowercase hex.",
+    "text": "body, requestBody, responseBody, plaintext, canonical and aad are UTF-8 text: hash, sign, MAC and encrypt their UTF-8 bytes. *Hex fields are the exact bytes, hex-encoded.",
+    "ed25519": "seed = the 32-byte RFC 8032 private key (Go: ed25519.NewKeyFromSeed); publicKey = the raw 32 bytes; signatures are 64 bytes.",
+    "x25519": "privateKey = the raw 32-byte scalar (Go: ecdh.X25519().NewPrivateKey); publicKey = the raw 32 bytes.",
+    "requests": "canonical = \"NSA1\\n<method>\\n<pathWithQuery>\\n<timestamp>\\n<nonce>\\n<agentId>\\n<bodySha256>\"; signature = Ed25519(keys.agentSign, canonical).",
+    "answers": "canonical = \"NSA1-RESP\\n<status>\\n<agentId>\\n<method>\\n<pathWithQuery>\\n<requestNonce>\\n<bodySha256>\"; signature = Ed25519(keys[signedBy], canonical). agentId, method, pathWithQuery and requestNonce are those of the request answered, exactly as it was signed. Signed answers are the 2xx ones and the 403 whose body is exactly {\"code\":\"agent_removed\"} (the agent idles only on that body with a signature that verifies; any other 403, or one unsigned or badly signed, is a transient error).",
+    "joinCodes": "A join code is \"nsj_\" + 12 base62 + \"_\" + 36 base62 (base62 = 0-9A-Za-z, nothing else, no surrounding whitespace). joinCodeId = the part before the last \"_\" (sent in the JoinRequest); secret = the last 36 characters (never sent). valid: each joinCode splits into joinCodeId and secret; invalid: none of these strings is a join code.",
+    "joins": "requestBody = the JoinRequest exactly as sent; proofMessage = the ASCII bytes of \"NSA1-JOIN-REQ\\n\" followed by the UTF-8 bytes of requestBody (proofMessageHex); proof (header x-nsa-join-proof) = hex HMAC-SHA256(key = UTF-8 bytes of secret, message = proofMessage). responseBody = the 201 JoinResponse exactly as sent; macMessage = the ASCII bytes of \"NSA1-JOIN-ANS\\n\" followed by the UTF-8 bytes of responseBody (macMessageHex); mac (header x-nsa-join-mac) = hex HMAC-SHA256(key = UTF-8 bytes of secret, message = macMessage). The two labels keep a request and its proof from ever verifying as an answer, and the other way round.",
+    "seals": "epk = X25519 public of ephemeralPrivateKey; sharedSecret = X25519(ephemeralPrivateKey, keys.agentSeal.publicKey) = X25519(keys.agentSeal.privateKey, epk); salt = epk raw || keys.agentSeal.publicKey raw; bundleKey = HKDF-SHA256(ikm = sharedSecret, salt, info = \"nslookup-agent bundle key v1\", 32 bytes); aad = \"<assignmentId>|<sha256>\"; ciphertext = AES-256-GCM(bundleKey, nonce, plaintext, aad) followed by the 16-byte tag (Go: cipher.AEAD Seal output). ephemeralPrivateKey and nonce are fixed here only so the output is reproducible; real seals use fresh random ones.",
+    "serverSignPublicKeys": "A heartbeat answer lists serverSignPublicKeys: 1 or 2 raw 32-byte Ed25519 public keys, base64url; [0] signs current answers, [1] (during a rotation) is the next key. An agent accepts an answer signed by any key it trusts (first the join's serverSignPublicKey); after a heartbeat answer verifies, it replaces its trusted set with the list when the list is valid: 1-2 entries, each well formed and not of small order, including the key that verified the answer. keys.serverSignNext is the next key of these vectors."
+  },
+  "keys": {
+    "agentSign": {
+      "seed": "rZXep8gAzALrzmwpVfuObQBNQtGevYXedS_1CIZLQno",
+      "publicKey": "_n2RtEPit_GcK7lPrQ4lK5lBLwyh59j4pehkAyN5foY"
+    },
+    "agentSeal": {
+      "privateKey": "0gIV6LBwPfXAcQuZVdVm6q4oWSZ33iliY-SKnZRGnzE",
+      "publicKey": "d9fSdxqh994WC3pvzZg0yCXrc8amEYFcaEl9w_TC2Fg"
+    },
+    "serverSign": {
+      "seed": "AZtfuvyW1-KinyF53qwp97uDdfgx7VvTxcRsm3AJxR8",
+      "publicKey": "1VSN2LzbUEa0lyYDWYTaeAwwAbIeqKOnyl5PPJ-mRMw"
+    },
+    "serverSignNext": {
+      "seed": "aQMUVABN-KRtqkxEQW8Sw9uZqDnf_6RBmJyhuK3hhQQ",
+      "publicKey": "QvGLMLZu4Jzl-anDUufSnsUBSh2ZdHCNzrHIW2cbxDo"
+    }
+  },
+  "requests": [
+    {
+      "name": "heartbeat: POST with a JSON body",
+      "method": "POST",
+      "pathWithQuery": "/agent/v1/heartbeat",
+      "timestamp": 1793275200,
+      "nonce": "1Qq_oYMovLEE9RjPmJrizg",
+      "agentId": "3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93",
+      "body": "{\"version\":\"1.0.0\",\"facts\":{\"os\":\"linux\",\"osVersion\":\"Ubuntu 24.04\",\"arch\":\"amd64\",\"hostname\":\"web-01.example.test\",\"webServers\":[{\"kind\":\"nginx\",\"version\":\"1.24.0\"}],\"kubernetes\":null,\"agentVersion\":\"1.0.0\"},\"inventoryHash\":\"0e5659110f58d3d8927d051a33561ee4402c899f569f17ae11b868aa32b04323\",\"inventory\":null,\"installed\":[]}",
+      "bodySha256": "97f002e075df393b39b494b419ce2cf376f605af7c9f4f7c94a979cbd7ee3db3",
+      "canonical": "NSA1\nPOST\n/agent/v1/heartbeat\n1793275200\n1Qq_oYMovLEE9RjPmJrizg\n3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93\n97f002e075df393b39b494b419ce2cf376f605af7c9f4f7c94a979cbd7ee3db3",
+      "signature": "Yj6r958F7itUnjDhH9adyGpyHlPL6w0W9LYWEkZvunExfEvnf6ZEAwhd6rSAQwV6z8bU0fqv2KgwRDXMYPYnAQ"
+    },
+    {
+      "name": "bundle: GET with an empty body (the hash of the empty string)",
+      "method": "GET",
+      "pathWithQuery": "/agent/v1/assignments/9c1d4e7a-2b3f-4a8c-9d6e-0f1a2b3c4d5e/bundle",
+      "timestamp": 1793275200,
+      "nonce": "FDXigY8BVNeA7-R0JW8zgw",
+      "agentId": "3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93",
+      "body": "",
+      "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "canonical": "NSA1\nGET\n/agent/v1/assignments/9c1d4e7a-2b3f-4a8c-9d6e-0f1a2b3c4d5e/bundle\n1793275200\nFDXigY8BVNeA7-R0JW8zgw\n3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "signature": "iPgNkNGCLaxJpF-z6Q0b3UzYuuwBwz_URVV3b-T8FQU7Xfd7jyGteMxEtx7QapSR0JECzNj_dyi5Yu2PxvAwAg"
+    },
+    {
+      "name": "result: POST with non-ASCII text (hash the UTF-8 bytes)",
+      "method": "POST",
+      "pathWithQuery": "/agent/v1/assignments/9c1d4e7a-2b3f-4a8c-9d6e-0f1a2b3c4d5e/result",
+      "timestamp": 1793275200,
+      "nonce": "p40Uz3B-9XmH2wsKGa6C9Q",
+      "agentId": "3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93",
+      "body": "{\"sha256\":\"67d63322c2f5ee73d041cd56b8d93b66c029337f56eae43928d71b9960233716\",\"ok\":true,\"steps\":[{\"name\":\"written\",\"ok\":true,\"detail\":null},{\"name\":\"tested\",\"ok\":true,\"detail\":\"nginx -t: syntax ok\"},{\"name\":\"reloaded\",\"ok\":true,\"detail\":null}],\"message\":\"Installed — nginx reloaded on “web-01”\",\"servedLocally\":true,\"drift\":false}",
+      "bodySha256": "812b46fb54a67bbc7e715c27d3257bce31a9567f5ac87e6916de33c1b5f865a0",
+      "canonical": "NSA1\nPOST\n/agent/v1/assignments/9c1d4e7a-2b3f-4a8c-9d6e-0f1a2b3c4d5e/result\n1793275200\np40Uz3B-9XmH2wsKGa6C9Q\n3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93\n812b46fb54a67bbc7e715c27d3257bce31a9567f5ac87e6916de33c1b5f865a0",
+      "signature": "3uABKUJMz0rFKnajGkCe9re__c3NjmfOKrv3DmtoimB79zwc6Ms1iK6sSLjyc2wMTmgi-1vG628XKgllkHKUCg"
+    },
+    {
+      "name": "a query string is part of the path exactly as sent (not decoded, not reordered)",
+      "method": "GET",
+      "pathWithQuery": "/agent/v1/assignments/e4a7b2c9-6d1f-4e3a-8b5c-7f9d0e1a2b3c/bundle?b=2&a=x%2Fy",
+      "timestamp": 1793275200,
+      "nonce": "UK3-NirMGgblaCqzoyBfPA",
+      "agentId": "3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93",
+      "body": "",
+      "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "canonical": "NSA1\nGET\n/agent/v1/assignments/e4a7b2c9-6d1f-4e3a-8b5c-7f9d0e1a2b3c/bundle?b=2&a=x%2Fy\n1793275200\nUK3-NirMGgblaCqzoyBfPA\n3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "signature": "fIeupGI84522IXSHey5yCuc_CledDZyIGD0szbZr1xBfgu5mMtqU1-XLHUuGOYy9IGfgps-7p6RFOB6v2MxQAA"
+    }
+  ],
+  "answers": [
+    {
+      "name": "heartbeat: 200 with work",
+      "signedBy": "serverSign",
+      "status": 200,
+      "agentId": "3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93",
+      "method": "POST",
+      "pathWithQuery": "/agent/v1/heartbeat",
+      "requestNonce": "1Qq_oYMovLEE9RjPmJrizg",
+      "body": "{\"now\":1793275200,\"pollSeconds\":60,\"wantInventory\":false,\"minVersion\":\"1.0.0\",\"latestVersion\":\"1.0.0\",\"work\":[{\"assignmentId\":\"9c1d4e7a-2b3f-4a8c-9d6e-0f1a2b3c4d5e\",\"siteKey\":\"ebdc8825ff4220bbf4eacf630367e8cd\",\"sha256\":\"67d63322c2f5ee73d041cd56b8d93b66c029337f56eae43928d71b9960233716\",\"action\":\"install\",\"certbot\":null,\"folderName\":null}]}",
+      "bodySha256": "ca4a4440819784c26b4f4edb43a6e4f67522b89d53b25f38bb63d76ffdd96a4b",
+      "canonical": "NSA1-RESP\n200\n3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93\nPOST\n/agent/v1/heartbeat\n1Qq_oYMovLEE9RjPmJrizg\nca4a4440819784c26b4f4edb43a6e4f67522b89d53b25f38bb63d76ffdd96a4b",
+      "signature": "5KQWV4mqC0sFrwpdNoRTu1FfbS-TF4y6z1pHPSUO0Hwl3RnNdstICDQdkb1jjLS7h2Su4GWPABGte0UkFm7CDw"
+    },
+    {
+      "name": "bundle: 200 carrying the first seal",
+      "signedBy": "serverSign",
+      "status": 200,
+      "agentId": "3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93",
+      "method": "GET",
+      "pathWithQuery": "/agent/v1/assignments/9c1d4e7a-2b3f-4a8c-9d6e-0f1a2b3c4d5e/bundle",
+      "requestNonce": "FDXigY8BVNeA7-R0JW8zgw",
+      "body": "{\"assignmentId\":\"9c1d4e7a-2b3f-4a8c-9d6e-0f1a2b3c4d5e\",\"sha256\":\"67d63322c2f5ee73d041cd56b8d93b66c029337f56eae43928d71b9960233716\",\"certPem\":\"-----BEGIN CERTIFICATE-----\\nTEST-VECTOR-ONLY\\n-----END CERTIFICATE-----\\n\",\"chainPem\":\"-----BEGIN CERTIFICATE-----\\nTEST-VECTOR-ONLY-CHAIN\\n-----END CERTIFICATE-----\\n\",\"sealedKey\":{\"epk\":\"xP4gi_EPqQH0iONLRKVfB6PgwOkU7MRthT0BdGVb4D8\",\"nonce\":\"HohPAfMbA9X3RwaE\",\"ciphertext\":\"2Cvtt1j74LZv-2KDgD3a0VDZ9m-bIwNGkgQt1jHojuppfxyi7qlqwl90HT40FATR3C6dEWHpSCUASjlyP06-MtTo4wScOiC41Uxl8SSJzjBdWPBUUMYXUpgeEmGRWhLeRw\"}}",
+      "bodySha256": "2f81a4781958dbfa6cb3860dd7ccfeb604f85e24ca7b13064d3c62d249f574a8",
+      "canonical": "NSA1-RESP\n200\n3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93\nGET\n/agent/v1/assignments/9c1d4e7a-2b3f-4a8c-9d6e-0f1a2b3c4d5e/bundle\nFDXigY8BVNeA7-R0JW8zgw\n2f81a4781958dbfa6cb3860dd7ccfeb604f85e24ca7b13064d3c62d249f574a8",
+      "signature": "jeJqlixa9WQPA56J196XUqycC4Bm85cceEmzT-eSIJbGABt41UCSRiTXuHT32y1dMdUIbnPuSlypf6l8y3XQAg"
+    },
+    {
+      "name": "result: 204 with an empty body",
+      "signedBy": "serverSign",
+      "status": 204,
+      "agentId": "3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93",
+      "method": "POST",
+      "pathWithQuery": "/agent/v1/assignments/9c1d4e7a-2b3f-4a8c-9d6e-0f1a2b3c4d5e/result",
+      "requestNonce": "p40Uz3B-9XmH2wsKGa6C9Q",
+      "body": "",
+      "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "canonical": "NSA1-RESP\n204\n3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93\nPOST\n/agent/v1/assignments/9c1d4e7a-2b3f-4a8c-9d6e-0f1a2b3c4d5e/result\np40Uz3B-9XmH2wsKGa6C9Q\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "signature": "81GyhBPml8nXs8zMrseen_ZYYM3FCPwvUnfEoBG7iETN28bw9_vqQeWbExhgwyK-eXTlkQUQKlTpobxtl2hPCg"
+    },
+    {
+      "name": "heartbeat: 200 announcing the next server key (serverSignPublicKeys = [active, next], signed by the active key)",
+      "signedBy": "serverSign",
+      "status": 200,
+      "agentId": "3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93",
+      "method": "POST",
+      "pathWithQuery": "/agent/v1/heartbeat",
+      "requestNonce": "1Qq_oYMovLEE9RjPmJrizg",
+      "body": "{\"now\":1793275200,\"pollSeconds\":60,\"wantInventory\":false,\"minVersion\":\"1.0.0\",\"latestVersion\":\"1.0.0\",\"serverSignPublicKeys\":[\"1VSN2LzbUEa0lyYDWYTaeAwwAbIeqKOnyl5PPJ-mRMw\",\"QvGLMLZu4Jzl-anDUufSnsUBSh2ZdHCNzrHIW2cbxDo\"],\"work\":[]}",
+      "bodySha256": "c9979dbcaf04cb2182c7c57b7e8a691befad17fd0c5c1c4b9d35c7acc961e028",
+      "canonical": "NSA1-RESP\n200\n3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93\nPOST\n/agent/v1/heartbeat\n1Qq_oYMovLEE9RjPmJrizg\nc9979dbcaf04cb2182c7c57b7e8a691befad17fd0c5c1c4b9d35c7acc961e028",
+      "signature": "XPboHJpxKODDGckxSuowvH7-KlYqqYEXqslSoNZni8lGKtFNSs7_fU8F6aVZG--WS12zUa53J_gJ0N3f4_h-Ag"
+    },
+    {
+      "name": "heartbeat: 200 after the rotation (serverSignPublicKeys = [next], signed by the former next key)",
+      "signedBy": "serverSignNext",
+      "status": 200,
+      "agentId": "3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93",
+      "method": "POST",
+      "pathWithQuery": "/agent/v1/heartbeat",
+      "requestNonce": "1Qq_oYMovLEE9RjPmJrizg",
+      "body": "{\"now\":1793275200,\"pollSeconds\":60,\"wantInventory\":false,\"minVersion\":\"1.0.0\",\"latestVersion\":\"1.0.0\",\"serverSignPublicKeys\":[\"QvGLMLZu4Jzl-anDUufSnsUBSh2ZdHCNzrHIW2cbxDo\"],\"work\":[]}",
+      "bodySha256": "99faeb084eafde36dc7805f0facc639d85b718ff723c22421389d0e573608907",
+      "canonical": "NSA1-RESP\n200\n3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93\nPOST\n/agent/v1/heartbeat\n1Qq_oYMovLEE9RjPmJrizg\n99faeb084eafde36dc7805f0facc639d85b718ff723c22421389d0e573608907",
+      "signature": "Wh-xIGgWLAJgdmzEJt9O2F164hbkJ11EyYy87crGcr01vykU1qL-A0aHCWmBPhIhislJ50pu7A8Kl5rK9GZZAQ"
+    },
+    {
+      "name": "heartbeat: 403 agent_removed, signed (the only 403 an agent idles on)",
+      "signedBy": "serverSign",
+      "status": 403,
+      "agentId": "3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93",
+      "method": "POST",
+      "pathWithQuery": "/agent/v1/heartbeat",
+      "requestNonce": "1Qq_oYMovLEE9RjPmJrizg",
+      "body": "{\"code\":\"agent_removed\"}",
+      "bodySha256": "f9d3b42d3084ec43187e2051ef1cf61d4e6aeb1c874e852e75dbc37d0ce4bd54",
+      "canonical": "NSA1-RESP\n403\n3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93\nPOST\n/agent/v1/heartbeat\n1Qq_oYMovLEE9RjPmJrizg\nf9d3b42d3084ec43187e2051ef1cf61d4e6aeb1c874e852e75dbc37d0ce4bd54",
+      "signature": "7ZF50NSx3zeUdBpxcAgMCT1JPwwbAfVc25qe2Vl6j6nJKkFg3fv8Kwks9ynwGoosPmXdzrm_3akuuIyqub23BQ"
+    }
+  ],
+  "joinCodes": {
+    "valid": [
+      {
+        "joinCode": "nsj_fmIhoHLGA0TN_Siska2CDSX601Zuup0QXAGJ1iPSRyZFo6aHr",
+        "joinCodeId": "nsj_fmIhoHLGA0TN",
+        "secret": "Siska2CDSX601Zuup0QXAGJ1iPSRyZFo6aHr"
+      },
+      {
+        "joinCode": "nsj_btC1qe6XgSDQ_EUHfbtVyi2U6322yq7ulThITcgx5phqAEE8V",
+        "joinCodeId": "nsj_btC1qe6XgSDQ",
+        "secret": "EUHfbtVyi2U6322yq7ulThITcgx5phqAEE8V"
+      }
+    ],
+    "invalid": [
+      "",
+      "nsj_fmIhoHLGA0TN",
+      "nsj_fmIhoHLGA0TN_Siska2CDSX601Zuup0QXAGJ1iPSRyZFo6aH",
+      "nsj_fmIhoHLGA0TN_Siska2CDSX601Zuup0QXAGJ1iPSRyZFo6aHrA",
+      "nsj_fmIhoHLGA0T_Siska2CDSX601Zuup0QXAGJ1iPSRyZFo6aHr",
+      "NSJ_fmIhoHLGA0TN_Siska2CDSX601Zuup0QXAGJ1iPSRyZFo6aHr",
+      "nsdt_fmIhoHLGA0TN_Siska2CDSX601Zuup0QXAGJ1iPSRyZFo6aHr",
+      "nsj_fmIhoHLGA0TN_Siska2CDSX601Zuup0QXAGJ1iPSRyZFo6aH-",
+      "nsj_fmIhoHLGA0TN-Siska2CDSX601Zuup0QXAGJ1iPSRyZFo6aHr",
+      "nsj_fmIhoHLGA0TN_Siska2CDSX601Zuup0QXAGJ1iPSRyZFo6aHr\n",
+      " nsj_fmIhoHLGA0TN_Siska2CDSX601Zuup0QXAGJ1iPSRyZFo6aHr"
+    ]
+  },
+  "joins": [
+    {
+      "name": "join: proof of the request, MAC of the 201 answer (non-ASCII name: hash the UTF-8 bytes)",
+      "joinCode": "nsj_fmIhoHLGA0TN_Siska2CDSX601Zuup0QXAGJ1iPSRyZFo6aHr",
+      "joinCodeId": "nsj_fmIhoHLGA0TN",
+      "secret": "Siska2CDSX601Zuup0QXAGJ1iPSRyZFo6aHr",
+      "requestBody": "{\"joinCodeId\":\"nsj_fmIhoHLGA0TN\",\"signPublicKey\":\"_n2RtEPit_GcK7lPrQ4lK5lBLwyh59j4pehkAyN5foY\",\"sealPublicKey\":\"d9fSdxqh994WC3pvzZg0yCXrc8amEYFcaEl9w_TC2Fg\",\"kind\":\"host\",\"name\":\"web-1 — front\",\"facts\":{\"os\":\"linux\",\"osVersion\":\"Ubuntu 24.04\",\"arch\":\"amd64\",\"hostname\":\"web-1.example.test\",\"webServers\":[{\"kind\":\"nginx\",\"version\":\"1.24.0\"}],\"kubernetes\":null,\"agentVersion\":\"1.0.0\"}}",
+      "proofMessageHex": "4e5341312d4a4f494e2d5245510a7b226a6f696e436f64654964223a226e736a5f666d49686f484c474130544e222c227369676e5075626c69634b6579223a225f6e325274455069745f47634b376c507251346c4b356c424c77796835396a347065686b41794e35666f59222c227365616c5075626c69634b6579223a22643966536478716839393457433370767a5a6730794358726338616d4559466361456c39775f5443324667222c226b696e64223a22686f7374222c226e616d65223a227765622d3120e280942066726f6e74222c226661637473223a7b226f73223a226c696e7578222c226f7356657273696f6e223a225562756e74752032342e3034222c2261726368223a22616d643634222c22686f73746e616d65223a227765622d312e6578616d706c652e74657374222c2277656253657276657273223a5b7b226b696e64223a226e67696e78222c2276657273696f6e223a22312e32342e30227d5d2c226b756265726e65746573223a6e756c6c2c226167656e7456657273696f6e223a22312e302e30227d7d",
+      "proof": "71e5dc04ca51944238d1e23c51d754d8afc81ada69a52d614700985d919c3966",
+      "responseBody": "{\"agentId\":\"3f2b8c1e-7a4d-4e9b-b1c6-5d8e2f0a7c93\",\"serverSignPublicKey\":\"1VSN2LzbUEa0lyYDWYTaeAwwAbIeqKOnyl5PPJ-mRMw\",\"pollSeconds\":60,\"minVersion\":\"1.0.0\",\"latestVersion\":\"1.0.0\"}",
+      "macMessageHex": "4e5341312d4a4f494e2d414e530a7b226167656e744964223a2233663262386331652d376134642d346539622d623163362d356438653266306137633933222c227365727665725369676e5075626c69634b6579223a223156534e324c7a62554561306c795944575954616541777741624965714b4f6e796c3550504a2d6d524d77222c22706f6c6c5365636f6e6473223a36302c226d696e56657273696f6e223a22312e302e30222c226c617465737456657273696f6e223a22312e302e30227d",
+      "mac": "82de8cd0c144a4df94a22fdfa2590eea744cc86110e2cfddd73ad55aa59ba080"
+    }
+  ],
+  "seals": [
+    {
+      "name": "short PEM",
+      "assignmentId": "9c1d4e7a-2b3f-4a8c-9d6e-0f1a2b3c4d5e",
+      "sha256": "67d63322c2f5ee73d041cd56b8d93b66c029337f56eae43928d71b9960233716",
+      "plaintext": "-----BEGIN PRIVATE KEY-----\nTEST-VECTOR-ONLY-NOT-A-KEY\n-----END PRIVATE KEY-----\n",
+      "aad": "9c1d4e7a-2b3f-4a8c-9d6e-0f1a2b3c4d5e|67d63322c2f5ee73d041cd56b8d93b66c029337f56eae43928d71b9960233716",
+      "ephemeralPrivateKey": "XqAVzvKBHjr3PMJhkRnFO3kgBLSRF68JlduDAh3tSOk",
+      "sharedSecret": "TpOhwm2QBQQRhPI2s0kWq1IdlNEKV3sJ8sbB3NAe2WM",
+      "salt": "xP4gi_EPqQH0iONLRKVfB6PgwOkU7MRthT0BdGVb4D9319J3GqH33hYLem_NmDTIJetzxqYRgVxoSX3D9MLYWA",
+      "bundleKey": "BbIa5GvGKnz3q6r12Kj4pPnZk7sbY3f3yjXofL8Z1Hc",
+      "sealed": {
+        "epk": "xP4gi_EPqQH0iONLRKVfB6PgwOkU7MRthT0BdGVb4D8",
+        "nonce": "HohPAfMbA9X3RwaE",
+        "ciphertext": "2Cvtt1j74LZv-2KDgD3a0VDZ9m-bIwNGkgQt1jHojuppfxyi7qlqwl90HT40FATR3C6dEWHpSCUASjlyP06-MtTo4wScOiC41Uxl8SSJzjBdWPBUUMYXUpgeEmGRWhLeRw"
+      }
+    },
+    {
+      "name": "multi-line PEM, other assignment",
+      "assignmentId": "e4a7b2c9-6d1f-4e3a-8b5c-7f9d0e1a2b3c",
+      "sha256": "f9742b2c730df9e307bbd00bac5148bde10f60ecfb2c503e1a443cda2c9e207d",
+      "plaintext": "-----BEGIN EC PRIVATE KEY-----\nTEST-VECTOR-ONLY\nNOT-A-KEY\n-----END EC PRIVATE KEY-----\n",
+      "aad": "e4a7b2c9-6d1f-4e3a-8b5c-7f9d0e1a2b3c|f9742b2c730df9e307bbd00bac5148bde10f60ecfb2c503e1a443cda2c9e207d",
+      "ephemeralPrivateKey": "XtsoPByn4yMEkQ89VM1tRLsBd0URD4gAB4TJfUa8RtE",
+      "sharedSecret": "Dz4Q3yxP85JEU5Wv6v7oPftqCXE3AND3ZoAH-YnrBVY",
+      "salt": "7GSjGyGDVUdYo63KIQSCXcZhAYqjKFJq5PKaSm6MSgh319J3GqH33hYLem_NmDTIJetzxqYRgVxoSX3D9MLYWA",
+      "bundleKey": "WDpHGaBscBBokUrvURGYM8TOceS5v-PhFXVsOejkvcA",
+      "sealed": {
+        "epk": "7GSjGyGDVUdYo63KIQSCXcZhAYqjKFJq5PKaSm6MSgg",
+        "nonce": "msptIWgOS7aUYrE8",
+        "ciphertext": "DZG2QULDpcx0RY95_FQTeH2WN0FRonTtvIBMkiVZWl9V4_IbB8ZO-DTkwcYAO8MwqyYMlUEMCH-Jo03WlE5scGl5CA-TZzGR837vT-dfLWZneK3HwZCXKz_xfsrYwsEkF0xvCW5QvQ"
+      }
+    }
+  ]
+}

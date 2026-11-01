@@ -1,0 +1,42 @@
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+# configuration file /etc/nginx/nginx.conf:
+events {}
+http {
+	include /etc/nginx/sites-enabled/*;
+}
+
+# configuration file /etc/nginx/sites-enabled/a-first:
+# No server says default_server on *:443: this one, the first there, answers every name the others do not serve.
+server {
+	listen 443 ssl;
+	server_name first.example.test;
+	ssl_certificate /etc/ssl/first.pem;
+	ssl_certificate_key /etc/ssl/first.key;
+}
+
+# configuration file /etc/nginx/sites-enabled/b-second:
+server {
+	listen 443 ssl;
+	listen [::]:443 ssl;
+	server_name second.example.test;
+	ssl_certificate /etc/ssl/second.pem;
+	ssl_certificate_key /etc/ssl/second.key;
+}
+
+# configuration file /etc/nginx/sites-enabled/c-ports:
+# The first on [::]:443 is the second server above; on 8443 this one is, but a later server says default_server there.
+server {
+	listen 8443 ssl;
+	server_name ports.example.test;
+	ssl_certificate /etc/ssl/ports.pem;
+	ssl_certificate_key /etc/ssl/ports.key;
+}
+
+# configuration file /etc/nginx/sites-enabled/d-default:
+server {
+	listen 8443 ssl default_server;
+	server_name default.example.test;
+	ssl_certificate /etc/ssl/default.pem;
+	ssl_certificate_key /etc/ssl/default.key;
+}

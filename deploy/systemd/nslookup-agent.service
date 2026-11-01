@@ -1,0 +1,29 @@
+# The nslookup.io agent on a Linux server. install.sh puts this file in /etc/systemd/system, the .deb and .rpm
+# packages in /usr/lib/systemd/system; both install the agent as /usr/local/bin/nslookup-agent.
+#
+# It runs as root: it reads the web servers' configuration, writes certificate and key files where that configuration
+# names them (anywhere: /etc/ssl, /etc/nginx, /etc/letsencrypt, /srv, ...), runs the web servers' config tests and
+# reloads them, and runs agent.yaml's folder.hook. So the file system is not made read-only (ProtectSystem=,
+# ProtectHome=) and /tmp is not made private (PrivateTmp=): a hook or a web server's own reload can rely on a socket or
+# a PID file there. NoNewPrivileges=yes: nothing it runs gains privileges through setuid files or file capabilities.
+#
+# Behind a proxy: systemctl edit nslookup-agent, then add
+#   [Service]
+#   Environment=HTTPS_PROXY=http://proxy.example.test:3128
+[Unit]
+Description=nslookup.io agent
+Documentation=https://github.com/nslookup-io/agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nslookup-agent run --mode host
+Restart=on-failure
+RestartSec=30
+# Stopping waits for an install under way: up to 2 minutes, then up to 1 to put the previous files back.
+TimeoutStopSec=200
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

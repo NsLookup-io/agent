@@ -1,0 +1,19 @@
+apiVersion: v2
+name: agent
+description: >-
+  The nslookup.io agent for Kubernetes: reports the hosts of your Ingresses to nslookup.io and installs the
+  certificates nslookup.io Certificate Autopilot renews into their TLS secrets.
+type: application
+# Releases set both to the agent's version (helm package --version --app-version).
+version: 1.0.0
+appVersion: "1.0.0"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/nslookup-io/agent
+sources:
+  - https://github.com/nslookup-io/agent
+keywords:
+  - certificates
+  - tls
+  - ingress
+annotations:
+  artifacthub.io/license: Apache-2.0

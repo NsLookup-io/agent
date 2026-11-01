@@ -1,0 +1,90 @@
+{{- $fullname := include "agent.fullname" . -}}
+{{- $namespaces := include "agent.namespaces" . | fromJsonArray -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent.labels" . | nindent 4 }}
+spec:
+  # One agent per release, and never two at once: an old pod stops before the new one starts.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agent.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      # It talks to the Kubernetes API with this service account's token.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["run", "--mode=kubernetes"]
+          env:
+            {{- /* POD_NAMESPACE: where its identity Secret lives; NSL_MODE: for kubectl exec … /nslookup-agent inventory too. */}}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: NSL_MODE
+              value: kubernetes
+            {{- if .Values.existingJoinSecret }}
+            - name: NSL_JOIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingJoinSecret }}
+                  key: joinCode
+                  {{- /* Once joined, the agent needs the code no more. */}}
+                  optional: true
+            {{- else if .Values.joinCode }}
+            - name: NSL_JOIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-join
+                  key: joinCode
+            {{- end }}
+            {{- with .Values.name }}
+            - name: NSL_NAME
+              value: {{ . | toString | quote }}
+            {{- end }}
+            {{- with .Values.server }}
+            - name: NSL_SERVER
+              value: {{ . | toString | quote }}
+            {{- end }}
+            {{- with $namespaces }}
+            - name: NSL_NAMESPACES
+              value: {{ join "," . | quote }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- /* What it installed (installed.json): kept across restarts of the container, not of the pod. */}}
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/nslookup-agent
+      volumes:
+        - name: state
+          emptyDir: {}
