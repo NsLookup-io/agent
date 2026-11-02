@@ -112,6 +112,14 @@ type Recorder interface {
 	Recorded(site protocol.Site) string
 }
 
+// ServeChecker is an Installer that can ask, without installing, whether a site serves a certificate (a Kubernetes
+// site: its ingress controller). The "already installed" result then says so as an install's result does: after a
+// Kubernetes pod was replaced, that result is the one the server keeps.
+type ServeChecker interface {
+	// CheckServed asks whether site serves the certificate sha now, and says what it saw.
+	CheckServed(ctx context.Context, site protocol.Site, sha string) (bool, string)
+}
+
 // AssignedSetter is an Installer told, before each round of work, the sites the server assigns certificates to now
 // (the sites of its install work): a certbot name one of them still uses is not given back for another.
 type AssignedSetter interface {
@@ -145,12 +153,13 @@ func (SystemClock) Sleep(ctx context.Context, d time.Duration) error {
 // work of each answer.
 //
 // For each install the loop compares the certificate on disk with the one the work names: the same → one "already
-// installed" result the first time (the server marks installs only from results), then nothing; one the agent did not
-// install last (a file changed by hand or by another tool) → a drift result once, nothing installed; otherwise the
-// bundle is fetched, checked to be the named certificate, installed once per SHA-256, and the result reported (again
-// on the next heartbeat while it cannot be sent). A folder certificate whose reload is owed counts as not installed
-// (applied again, it only reloads); a folder the agent may not use is reported once per reason, so the customer hears
-// what to fix (a site's certificate that cannot be read only waits). Work whose id is not an assignment id is skipped.
+// installed" result the first time (the server marks installs only from results; with a ServeChecker it says whether
+// the site serves it), then nothing; one the agent did not install last (a file changed by hand or by another tool) →
+// a drift result once, nothing installed; otherwise the bundle is fetched, checked to be the named certificate,
+// installed once per SHA-256, and the result reported (again on the next heartbeat while it cannot be sent). A folder
+// certificate whose reload is owed counts as not installed (applied again, it only reloads); a folder the agent may
+// not use is reported once per reason, so the customer hears what to fix (a site's certificate that cannot be read
+// only waits). Work whose id is not an assignment id is skipped.
 //
 // The agent never adjusts its clock or deletes anything on the server's word: a removed agent (a 403 agent_removed the
 // server signed; an unsigned one is a refusal like the others) stops all work and waits to be uninstalled (an exited
@@ -685,6 +694,8 @@ type target struct {
 	check func() error
 	// recorded is the installer's own record of what the agent installed there ("" none); nil: it keeps none.
 	recorded func() string
+	// served asks whether the site serves a certificate (ServeChecker); nil: it cannot be asked.
+	served func(ctx context.Context, sha string) (bool, string)
 }
 
 // targetOf finds where w installs. ok is false when it cannot: cannot says why when the server should know (no
@@ -726,6 +737,9 @@ func (l *Loop) targetOf(w protocol.Work, sites map[string]protocol.Site) (t targ
 	}
 	if r, ok := l.Installer.(Recorder); ok {
 		t.recorded = func() string { return r.Recorded(site) }
+	}
+	if s, ok := l.Installer.(ServeChecker); ok {
+		t.served = func(ctx context.Context, sha string) (bool, string) { return s.CheckServed(ctx, site, sha) }
 	}
 	return t, "", true
 }
@@ -783,11 +797,21 @@ func (l *Loop) install(ctx context.Context, w protocol.Work, sites map[string]pr
 		l.installed[id] = disk
 		l.Log.Info("the certificate is already installed", "assignment", id, "sha256", disk)
 		already := "already installed"
-		return l.report(ctx, id, protocol.InstallResult{
+		result := protocol.InstallResult{
 			SHA256: disk,
 			OK:     true,
 			Steps:  []protocol.Step{{Name: protocol.StepChecked, OK: true, Detail: &already}},
-		})
+		}
+		if t.served != nil {
+			// servedLocally only when seen: a miss here says nothing the server's own check would not.
+			served, detail := t.served(ctx, disk)
+			detail = protocol.Clip(detail, maxDetail)
+			result.Steps = append(result.Steps, protocol.Step{Name: protocol.StepCheckedLocally, OK: served, Detail: &detail})
+			if served {
+				result.ServedLocally = &served
+			}
+		}
+		return l.report(ctx, id, result)
 	}
 	last, known := l.installed[id]
 	if !known && t.recorded != nil && !owed && disk != w.SHA256 {

@@ -954,6 +954,53 @@ func TestAFileAlreadyHoldingTheCertificateIsReportedOnce(t *testing.T) {
 	}
 }
 
+// servingInstaller is a site installer that can ask whether a site serves a certificate (a Kubernetes site: its
+// ingress controller); asked collects the SHA-256s it was asked about.
+type servingInstaller struct {
+	siteInstaller
+	served bool
+	asked  *[]string
+}
+
+func (s servingInstaller) CheckServed(_ context.Context, _ protocol.Site, sha string) (bool, string) {
+	*s.asked = append(*s.asked, sha)
+	if s.served {
+		return true, "the ingress controller serves the new certificate (1 names and addresses asked)"
+	}
+	return false, "shop.example at 10.0.0.1:443: the ingress controller serves another certificate"
+}
+
+// After a Kubernetes pod was replaced its ledger is empty, and its one "already installed" result replaces the
+// install's: it says whether the site serves the certificate, as the install's did, and leaves servedLocally empty
+// when it was not seen.
+func TestAnAlreadyInstalledResultSaysWhetherTheSiteServesIt(t *testing.T) {
+	for _, served := range []bool{true, false} {
+		t.Run(fmt.Sprint("served ", served), func(t *testing.T) {
+			h := newHarness(t, 3)
+			var asked []string
+			h.loop.Installer = servingInstaller{siteInstaller{h}, served, &asked}
+			h.work = []protocol.Work{install(assignX, shaA)} // on disk: A
+			if err := h.run(); err != nil {
+				t.Fatal(err)
+			}
+			if len(h.applied) != 0 || len(h.bundles) != 0 || !slices.Equal(asked, []string{shaA}) {
+				t.Errorf("applied %d, bundles %d, asked %v", len(h.applied), len(h.bundles), asked)
+			}
+			saw, detail := servingInstaller{served: served, asked: new([]string)}.CheckServed(context.Background(), protocol.Site{}, shaA)
+			want := protocol.InstallResult{SHA256: shaA, OK: true, Steps: []protocol.Step{
+				{Name: protocol.StepChecked, OK: true, Detail: ptr("already installed")},
+				{Name: protocol.StepCheckedLocally, OK: saw, Detail: &detail},
+			}}
+			if served {
+				want.ServedLocally = ptr(true)
+			}
+			if len(h.results) != 1 || !reflect.DeepEqual(h.results[0], want) {
+				t.Fatalf("results %+v, want one %+v", h.results, want)
+			}
+		})
+	}
+}
+
 // memLedger is a Ledger in memory; load is what it starts with.
 type memLedger struct {
 	load  Memory

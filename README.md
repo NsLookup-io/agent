@@ -170,7 +170,9 @@ and its ServiceAccount. Its RBAC is Ingresses `get`, `list`, `watch` and Secrets
 nothing else: a ClusterRole, or with `namespaces` a Role in each of them. Then, unless its own namespace is one of them,
 a Role there lets it read and update its identity Secret `nslookup-agent-identity` and create Secrets (Kubernetes cannot
 limit a create to one name). The join code goes into a Secret of the release; once joined, the agent keeps its own
-identity Secret and the code is not used again.
+identity Secret and the code is not used again. Besides nslookup.io, the agent connects to port 443 of the addresses
+your Ingresses list for their ingress controller, after each install (below): allow that if a NetworkPolicy limits
+its egress.
 
 To update, `helm upgrade nslookup-agent oci://ghcr.io/nslookup-io/charts/agent -n nslookup-agent --reuse-values`. To
 uninstall, `helm uninstall nslookup-agent -n nslookup-agent`, then `kubectl delete secret nslookup-agent-identity -n
@@ -369,6 +371,16 @@ below). That annotation is also its record of what it installed, kept with the s
 certificate changed by hand afterwards is reported to the portal and not overwritten, also after the agent's pod was
 replaced. It writes the secret as it read it (its `resourceVersion`): one changed meanwhile is read again once. Ingress
 controllers pick up a changed secret by themselves, so nothing is reloaded.
+
+Then it asks the ingress controller whether it serves the new certificate, and says so; this never undoes the install.
+It connects to the addresses the Ingresses using the secret list for their controller (`status.loadBalancer`: each
+entry's IP, else its host name, at most four), on port 443, once for each name, and compares the certificate it gets
+with the new one, again every quarter second for up to 15 seconds (nginx and Traefik pick a secret up within seconds).
+The addresses come from your cluster, never from nslookup.io. When it does not see the new certificate (a controller
+that picks secrets up later, such as Google's own load balancer, which takes minutes; one that does not answer from
+inside the cluster; an Ingress that lists no address), it says what it saw and the portal goes by nslookup.io's own
+check from the internet. After the agent's pod was replaced, the one "already installed" report of a certificate that
+is in its secret asks again, for up to 3 seconds.
 
 It never writes, and the portal says why (the portal reads the signs below; the agent cannot read cert-manager's own
 `Certificate` objects, which would need more rights than it has):

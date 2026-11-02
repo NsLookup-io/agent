@@ -2,6 +2,7 @@ package kube
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -27,9 +28,19 @@ const (
 	// apiTimeout bounds a read outside an install; applyTimeout an install.
 	apiTimeout   = 30 * time.Second
 	applyTimeout = time.Minute
+	// controllerPort is where the check after an install asks an ingress controller; serveWindow is how long it waits
+	// for the controller to pick the secret up (nginx and Traefik take seconds); recheckWindow how long the check of a
+	// certificate already in the secret waits.
+	controllerPort = 443
+	serveWindow    = 15 * time.Second
+	recheckWindow  = 3 * time.Second
 )
 
-var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var (
+	sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	// errNoLongerUsed: the Ingresses read now do not use the site's secret as the inventory said.
+	errNoLongerUsed = errors.New("the Ingresses no longer use this secret as the agent last read them")
+)
 
 // Installer writes the TLS secrets of the sites the agent read (agent.Installer). An install checks the bundle (the
 // certificate the work names, its key, every name served from the secret, not expired), reads the Ingresses and the
@@ -37,14 +48,16 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // the secret there, keeping its other keys, labels and annotations, or into a new kubernetes.io/tls secret. Each
 // secret it writes is labelled app.kubernetes.io/managed-by: nslookup-agent (a secret that label gives to another tool
 // is never written) and annotated nslookup.io/sha256. Ingress controllers pick up a changed secret by themselves: there
-// is nothing to reload.
+// is nothing to reload. Then it asks the ingress controllers whether they serve the new certificate (servedBy).
 type Installer struct {
 	Client kubernetes.Interface
 	// Namespaces are those it may write in; none: every namespace.
 	Namespaces []string
 
-	// now: nil = time.Now.
-	now func() time.Time
+	// now: nil = time.Now. tlsPort, serveWindow and recheckWindow: 0 = controllerPort, serveWindow, recheckWindow.
+	now                        func() time.Time
+	tlsPort                    int
+	serveWindow, recheckWindow time.Duration
 }
 
 func (k *Installer) clock() time.Time {
@@ -126,9 +139,12 @@ func recordOf(secret *corev1.Secret) string {
 	return sha
 }
 
-// Apply writes b into the site's secret and says how it went (steps checked, secret_written). A site whose Ingresses
-// no longer use that secret as the agent read them, a bundle that fails the check and a secret the agent never writes
-// are refused with nothing written. A release has nothing to give back here: a secret has no certbot renewal.
+// Apply writes b into the site's secret and says how it went (steps checked, secret_written, checked_locally). A site
+// whose Ingresses no longer use that secret as the agent read them, a bundle that fails the check and a secret the agent
+// never writes are refused with nothing written. A release has nothing to give back here: a secret has no certbot
+// renewal. servedLocally is set only when the ingress controllers were seen serving the new certificate: one that
+// picks the secret up later (Google's load balancer takes minutes) is no failure, and the server's own check speaks
+// for the site.
 func (k *Installer) Apply(ctx context.Context, site protocol.Site, b protocol.Bundle, w protocol.Work) protocol.InstallResult {
 	var o install.Outcome
 	if w.Action != protocol.ActionInstall {
@@ -144,7 +160,11 @@ func (k *Installer) Apply(ctx context.Context, site protocol.Site, b protocol.Bu
 	defer cancel()
 	g, err := k.liveGroup(ctx, ref.Namespace, site.SiteKey)
 	if err != nil {
-		o.Fail(protocol.StepChecked, err.Error())
+		why := err.Error()
+		if errors.Is(err, errNoLongerUsed) {
+			why += "; nothing was written (the next read reports the change)"
+		}
+		o.Fail(protocol.StepChecked, why)
 		return o.Result(false)
 	}
 	leaf, chain, key, err := install.CheckBundle(b, w.SHA256, g.names, k.clock())
@@ -160,7 +180,47 @@ func (k *Installer) Apply(ctx context.Context, site protocol.Site, b protocol.Bu
 		return o.Result(false)
 	}
 	o.OK(protocol.StepSecretWritten, done)
-	return o.Result(true)
+	served, detail := k.servedBy(ctx, g, w.SHA256, cmp.Or(k.serveWindow, serveWindow))
+	o.Step(protocol.StepCheckedLocally, served, detail)
+	r := o.Result(true)
+	if served {
+		r.ServedLocally = &served
+	}
+	return r
+}
+
+// CheckServed asks the ingress controllers of the site's Ingresses, as read now, whether they serve the certificate
+// sha (agent.ServeChecker), waiting only a moment: it is already in the secret.
+func (k *Installer) CheckServed(ctx context.Context, site protocol.Site, sha string) (bool, string) {
+	ref, err := k.secretOf(site)
+	if err != nil {
+		return false, err.Error()
+	}
+	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
+	defer cancel()
+	g, err := k.liveGroup(ctx, ref.Namespace, site.SiteKey)
+	if err != nil {
+		return false, err.Error()
+	}
+	return k.servedBy(ctx, g, sha, cmp.Or(k.recheckWindow, recheckWindow))
+}
+
+// servedBy asks the addresses g's Ingresses list for their ingress controller (status.loadBalancer), on port 443, for
+// every name served from g's secret, whether they serve sha, for up to window (install.ServedAt). The addresses come
+// from the cluster, never from the server. It only reports: a controller that is not reachable from the pod (a load
+// balancer that does not answer its own cluster) explains a miss.
+func (k *Installer) servedBy(ctx context.Context, g *group, sha string, window time.Duration) (bool, string) {
+	if len(g.addresses) == 0 {
+		return false, "no Ingress using the secret lists the address of its ingress controller (status.loadBalancer); nothing was asked"
+	}
+	port := cmp.Or(k.tlsPort, controllerPort)
+	var targets []install.ServeTarget
+	for _, a := range g.addresses {
+		for _, n := range g.names {
+			targets = append(targets, install.ServeTarget{Address: a, Name: n, Port: port})
+		}
+	}
+	return install.ServedAt(ctx, targets, sha, window, "the ingress controller")
 }
 
 // liveGroup reads the Ingresses of namespace ns again and finds the site with key siteKey among them: what the
@@ -175,7 +235,7 @@ func (k *Installer) liveGroup(ctx context.Context, ns, siteKey string) (*group, 
 			return g, nil
 		}
 	}
-	return nil, errors.New("the Ingresses no longer use this secret as the agent last read them; nothing was written (the next read reports the change)")
+	return nil, errNoLongerUsed
 }
 
 // write puts crt (the certificate and its chain) and key into g's secret, as read now: a new one when there is none,

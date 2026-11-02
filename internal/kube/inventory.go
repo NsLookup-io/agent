@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -33,6 +34,8 @@ import (
 const (
 	// listPage: Ingresses are listed this many at a time.
 	listPage = 500
+	// maxAddresses is the most ingress controller addresses a site's check asks.
+	maxAddresses = 4
 	// maxSiteNames, maxVersion and maxIngressClass are the server's limits.
 	maxSiteNames    = 100
 	maxVersion      = 64
@@ -54,6 +57,9 @@ type group struct {
 	// certManager: an Ingress using the secret asks cert-manager for its certificates, so the secret is cert-manager's
 	// even before cert-manager wrote it.
 	certManager bool
+	// addresses are those the Ingresses list for their ingress controller (status.loadBalancer: IPs and host names),
+	// sorted, each once, at most maxAddresses: what the check after an install asks.
+	addresses []string
 }
 
 // key is the site's key: "k8s_ingress|<namespace>/<first ingress>|<secret>".
@@ -174,6 +180,7 @@ func groupsOf(ingresses []networkingv1.Ingress) []*group {
 		g.ingresses = append(g.ingresses, ing.Name)
 		g.names = append(g.names, names...)
 		g.certManager = g.certManager || asksCertManager(ing)
+		g.addresses = append(g.addresses, controllerAddresses(ing)...)
 	}
 	var withTLS []string
 	for i := range ingresses {
@@ -203,12 +210,33 @@ func groupsOf(ingresses []networkingv1.Ingress) []*group {
 	for _, g := range byID {
 		g.ingresses = sortedUnique(g.ingresses)
 		g.names = sortedUnique(g.names)
+		g.addresses = sortedUnique(g.addresses)
+		g.addresses = g.addresses[:min(len(g.addresses), maxAddresses)]
 		if len(g.names) > 0 {
 			groups = append(groups, g)
 		}
 	}
 	slices.SortFunc(groups, func(a, b *group) int { return cmp.Compare(a.key(), b.key()) })
 	return groups
+}
+
+// controllerAddresses are the addresses ing's ingress controller lists in its status (status.loadBalancer.ingress): each
+// entry's IP, else its host name; what is neither is left out.
+func controllerAddresses(ing *networkingv1.Ingress) []string {
+	var out []string
+	for _, lb := range ing.Status.LoadBalancer.Ingress {
+		switch {
+		case lb.IP != "":
+			if net.ParseIP(lb.IP) != nil {
+				out = append(out, lb.IP)
+			}
+		case lb.Hostname != "":
+			if len(validation.IsDNS1123Subdomain(lb.Hostname)) == 0 {
+				out = append(out, lb.Hostname)
+			}
+		}
+	}
+	return out
 }
 
 func ruleHosts(ing *networkingv1.Ingress) []string {

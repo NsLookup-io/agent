@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -167,5 +168,70 @@ func TestTheLocalCheckEndsWhenItsContextDoes(t *testing.T) {
 	ok, _ := checkLocally(ctx, []inventory.Use{{Names: []string{"shop.example"}, Ports: []int{port}}}, next.sha, wait)
 	if ok || sleeps != 1 || time.Since(start) > time.Second {
 		t.Errorf("%v, %d sleeps, %v", ok, sleeps, time.Since(start))
+	}
+}
+
+// sniServer serves c on 127.0.0.1, collects the server names (SNI) asked for in asked, and returns its port.
+func sniServer(t *testing.T, c issued, asked chan<- string) int {
+	t.Helper()
+	pair, err := tls.X509KeyPair(cat(c.leafPEM, c.chainPEM), c.keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{GetCertificate: func(h *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		asked <- h.ServerName
+		return &pair, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_ = conn.(*tls.Conn).Handshake()
+			}()
+		}
+	}()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+// ServedAt asks the address it is given for each name (a wildcard with a label of the agent's own in place of its
+// "*"), and says who answered in the words it is given.
+func TestServedAtAsksTheAddressGivenForEachName(t *testing.T) {
+	next := newCA(t).issue(t, "*.shop.example", "shop.example")
+	asked := make(chan string, 10)
+	port := sniServer(t, next, asked)
+	targets := []ServeTarget{{Address: "127.0.0.1", Name: "*.shop.example", Port: port}, {Address: "127.0.0.1", Name: "shop.example", Port: port}}
+	ok, detail := ServedAt(context.Background(), targets, next.sha, time.Second, "the ingress controller")
+	if !ok || detail != "the ingress controller serves the new certificate (2 names and addresses asked)" {
+		t.Errorf("%v %q", ok, detail)
+	}
+	close(asked)
+	var names []string
+	for n := range asked {
+		names = append(names, n)
+	}
+	if strings.Join(names, " ") != "nslookup-agent-check.shop.example shop.example" {
+		t.Errorf("asked for %v", names)
+	}
+}
+
+func TestServedAtNamesTheAddressServingAnotherCertificate(t *testing.T) {
+	ca := newCA(t)
+	old, next := ca.issue(t, "shop.example"), ca.issue(t, "shop.example")
+	port := tlsServer(t, old)
+	start := time.Now()
+	ok, detail := ServedAt(context.Background(), []ServeTarget{{Address: "127.0.0.1", Name: "shop.example", Port: port}}, next.sha, 600*time.Millisecond, "the ingress controller")
+	if want := fmt.Sprintf("shop.example at 127.0.0.1:%d: the ingress controller serves another certificate", port); ok || detail != want {
+		t.Errorf("%v %q, want %q", ok, detail, want)
+	}
+	if waited := time.Since(start); waited < 500*time.Millisecond || waited > 2*time.Second {
+		t.Errorf("waited %v for a window of 600ms", waited)
 	}
 }

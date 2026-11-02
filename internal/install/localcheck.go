@@ -58,10 +58,24 @@ func (w localWait) withDefaults() localWait {
 	return w
 }
 
-type localTarget struct {
-	name string
-	port int
+// ServeTarget is one question of a check: which certificate Address:Port serves for Name. A wildcard name is asked
+// for with a label of the agent's own in place of its "*".
+type ServeTarget struct {
+	Address string
+	Name    string
+	Port    int
 }
+
+// speech is how a check says what it saw: who answers ("this machine"), what it asked ("names and ports") and how it
+// names one target.
+type speech struct {
+	who, asked string
+	target     func(ServeTarget) string
+}
+
+var thisMachine = speech{who: "this machine", asked: "names and ports", target: func(t ServeTarget) string {
+	return fmt.Sprintf("%s on port %d", t.Name, t.Port)
+}}
 
 // checkLocally asks this machine (127.0.0.1) for each name of the uses, on each of their ports (443 when a use names
 // none), and says whether every answer is the certificate sha. It asks again every interval until all of them serve it
@@ -71,19 +85,16 @@ type localTarget struct {
 // reports: a CDN in front or a listener on another address explains a miss, and the server's own check decides
 // whether a site is live.
 func checkLocally(ctx context.Context, uses []inventory.Use, sha string, wait localWait) (bool, string) {
-	var targets []localTarget
-	seen := map[localTarget]bool{}
+	var targets []ServeTarget
+	seen := map[ServeTarget]bool{}
 	for _, u := range uses {
 		ports := u.Ports
 		if len(ports) == 0 {
 			ports = []int{defaultTLSPort}
 		}
 		for _, n := range u.Names {
-			if rest, ok := strings.CutPrefix(n, "*."); ok {
-				n = wildcardLabel + "." + rest
-			}
 			for _, p := range ports {
-				if t := (localTarget{n, p}); !seen[t] {
+				if t := (ServeTarget{localAddress, n, p}); !seen[t] {
 					seen[t] = true
 					targets = append(targets, t)
 				}
@@ -93,6 +104,24 @@ func checkLocally(ctx context.Context, uses []inventory.Use, sha string, wait lo
 	if len(targets) == 0 {
 		return false, "the site has no name to ask this machine for"
 	}
+	return servedAt(ctx, targets, sha, wait, thisMachine)
+}
+
+// ServedAt asks each target which certificate it serves, as the local check asks this machine (checkLocally: again
+// every quarter second until all serve the certificate sha or window since the call is over, giving up early when none
+// answered for three rounds), and says what it saw last; who names what answers ("the ingress controller"). It only
+// reports.
+func ServedAt(ctx context.Context, targets []ServeTarget, sha string, window time.Duration, who string) (bool, string) {
+	if len(targets) == 0 {
+		return false, "nothing was asked"
+	}
+	return servedAt(ctx, targets, sha, localWait{window: window}, speech{who: who, asked: "names and addresses", target: func(t ServeTarget) string {
+		return t.Name + " at " + net.JoinHostPort(t.Address, strconv.Itoa(t.Port))
+	}})
+}
+
+// servedAt asks targets (at least one) until all serve sha or wait's window is over.
+func servedAt(ctx context.Context, targets []ServeTarget, sha string, wait localWait, say speech) (bool, string) {
 	wait = wait.withDefaults()
 	// The handshakes stop at the window's end too, so the check ends about window after the call whatever they do.
 	ctx, cancel := context.WithTimeout(ctx, wait.window)
@@ -100,7 +129,7 @@ func checkLocally(ctx context.Context, uses []inventory.Use, sha string, wait lo
 	deadline := wait.now().Add(wait.window)
 	silent := 0
 	for {
-		ok, detail, answered := askOnce(ctx, targets, sha)
+		ok, detail, answered := askOnce(ctx, targets, sha, say)
 		if ok {
 			return true, detail
 		}
@@ -121,18 +150,18 @@ func checkLocally(ctx context.Context, uses []inventory.Use, sha string, wait lo
 
 // askOnce asks every target once: whether all serve sha, what to say of the first that does not, and whether any
 // of them answered with a certificate.
-func askOnce(ctx context.Context, targets []localTarget, sha string) (ok bool, detail string, answered bool) {
+func askOnce(ctx context.Context, targets []ServeTarget, sha string, say speech) (ok bool, detail string, answered bool) {
 	for _, t := range targets {
-		served, err := servedSHA(ctx, t.name, t.port)
+		served, err := servedSHA(ctx, t)
 		switch {
 		case err != nil:
 			if detail == "" {
-				detail = fmt.Sprintf("%s on port %d: %v", t.name, t.port, err)
+				detail = fmt.Sprintf("%s: %v", say.target(t), err)
 			}
 		case served != sha:
 			answered = true
 			if detail == "" {
-				detail = fmt.Sprintf("%s on port %d: this machine serves another certificate", t.name, t.port)
+				detail = fmt.Sprintf("%s: %s serves another certificate", say.target(t), say.who)
 			}
 		default:
 			answered = true
@@ -141,22 +170,26 @@ func askOnce(ctx context.Context, targets []localTarget, sha string) (ok bool, d
 	if detail != "" {
 		return false, detail, answered
 	}
-	return true, fmt.Sprintf("this machine serves the new certificate (%d names and ports asked)", len(targets)), true
+	return true, fmt.Sprintf("%s serves the new certificate (%d %s asked)", say.who, len(targets), say.asked), true
 }
 
-// servedSHA is the SHA-256 of the leaf certificate 127.0.0.1:port serves for name.
-func servedSHA(ctx context.Context, name string, port int) (string, error) {
+// servedSHA is the SHA-256 of the leaf certificate t's address serves for its name.
+func servedSHA(ctx context.Context, t ServeTarget) (string, error) {
+	name := t.Name
+	if rest, ok := strings.CutPrefix(name, "*."); ok {
+		name = wildcardLabel + "." + rest
+	}
 	ctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 	d := tls.Dialer{Config: &tls.Config{
 		ServerName: name,
-		// The handshake only fetches the certificate this machine serves, compared below by its SHA-256 (a stricter
+		// The handshake only fetches the certificate the address serves, compared below by its SHA-256 (a stricter
 		// check than a chain's); nothing is sent over the connection. Old protocol versions are accepted for the same
 		// reason: the question is which certificate is served, not how well.
 		InsecureSkipVerify: true,
 		MinVersion:         tls.VersionTLS10,
 	}}
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(localAddress, strconv.Itoa(port)))
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(t.Address, strconv.Itoa(t.Port)))
 	if err != nil {
 		return "", err
 	}

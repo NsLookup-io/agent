@@ -62,8 +62,10 @@ func TestApplyUpdatesTheSecretKeepingItsOtherKeys(t *testing.T) {
 	}
 
 	r := k.Apply(context.Background(), site, next.bundle(), next.work(site.SiteKey))
-	if !r.OK || r.ServedLocally != nil || r.Message != nil || len(r.Steps) != 2 ||
-		r.Steps[0].Name != protocol.StepChecked || r.Steps[1].Name != protocol.StepSecretWritten || !r.Steps[1].OK {
+	// No Ingress of the fixture lists its controller's address: the check after the write asks nothing.
+	if !r.OK || r.ServedLocally != nil || r.Message != nil || len(r.Steps) != 3 ||
+		r.Steps[0].Name != protocol.StepChecked || r.Steps[1].Name != protocol.StepSecretWritten || !r.Steps[1].OK ||
+		r.Steps[2].Name != protocol.StepCheckedLocally || r.Steps[2].OK {
 		t.Fatalf("%+v: %s", r, stepsOf(r))
 	}
 	s := secretOf(t, f.cs, "shop", "shop-tls")
