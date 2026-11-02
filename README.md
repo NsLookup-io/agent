@@ -183,12 +183,14 @@ nslookup-agent`; the TLS secrets it wrote stay as they are.
 Releases are built by this repository's release workflow from a tag. `checksums.txt` (which lists every archive,
 package and `install.sh`), the image and the Helm chart are signed with [cosign](https://github.com/sigstore/cosign),
 keyless, as that workflow. Verifying needs cosign 3.0 or later: the signatures are Sigstore bundles
-(`.sigstore.json`), the format cosign reads by default only from 3.0 on. With `checksums.txt`,
-`checksums.txt.sigstore.json` and the files you downloaded in one folder:
+(`.sigstore.json`), the format cosign reads by default only from 3.0 on. The identity is the workflow's URL with the
+organization written `NsLookup-io`, as GitHub names it; cosign compares it exactly, so `nslookup-io` does not match.
+Below, put the tag of the release you downloaded in place of `v1.2.0` (and its version in place of `1.2.0`). With
+`checksums.txt`, `checksums.txt.sigstore.json` and the files you downloaded in one folder:
 
 ```sh
 cosign verify-blob \
-  --certificate-identity https://github.com/nslookup-io/agent/.github/workflows/release.yml@refs/tags/v1.2.0 \
+  --certificate-identity https://github.com/NsLookup-io/agent/.github/workflows/release.yml@refs/tags/v1.2.0 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --bundle checksums.txt.sigstore.json checksums.txt
 sha256sum --check --ignore-missing checksums.txt
@@ -198,10 +200,10 @@ The image and the chart:
 
 ```sh
 cosign verify ghcr.io/nslookup-io/agent:1.2.0 \
-  --certificate-identity https://github.com/nslookup-io/agent/.github/workflows/release.yml@refs/tags/v1.2.0 \
+  --certificate-identity https://github.com/NsLookup-io/agent/.github/workflows/release.yml@refs/tags/v1.2.0 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 cosign verify ghcr.io/nslookup-io/charts/agent:1.2.0 \
-  --certificate-identity https://github.com/nslookup-io/agent/.github/workflows/release.yml@refs/tags/v1.2.0 \
+  --certificate-identity https://github.com/NsLookup-io/agent/.github/workflows/release.yml@refs/tags/v1.2.0 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
