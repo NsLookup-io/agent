@@ -66,6 +66,9 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The tag that started this run. Left to itself goreleaser takes the highest tag on the commit, and git
+          # sorts v1.0.0-rc.1 above v1.0.0, so a final release tagged on its release candidate's commit built the rc.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
       - name: Helm chart
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
