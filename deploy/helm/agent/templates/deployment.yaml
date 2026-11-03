@@ -69,7 +69,7 @@ spec:
             - name: NSL_NAMESPACES
               value: {{ join "," . | quote }}
             {{- end }}
-            {{- if (.Values.annotations | default dict).enabled }}
+            {{- if include "agent.annotationsEnabled" . }}
             - name: NSL_ANNOTATIONS
               value: "true"
             {{- end }}

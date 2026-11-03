@@ -433,25 +433,43 @@ installs by itself: renewals never wait for anyone.
 Two switches must both be on, and neither does anything alone:
 
 1. In the cluster: Helm `annotations.enabled=true` (`--set annotations.enabled=true`), or `--annotations=true` /
-   `NSL_ANNOTATIONS=true`. Without it the agent does not read the annotations at all. Kubernetes mode only.
+   `NSL_ANNOTATIONS=true`. Without it the agent does not report the annotations. Kubernetes mode only.
 2. In the portal: the setting "Let Ingresses turn on Autopilot by annotation" on the agent's page.
 
 An admin approves each new site once, unless the agent is set to fully automatic in the portal; then the certificate
 is created without the click. The agent never edits the Ingress: the annotation is yours to add and remove. The
 Ingress needs a `tls` section naming the secret; an annotated Ingress without one is reported as a problem and nothing
-is created.
+is created. (An annotated Ingress whose `tls` entry has no `secretName`, or whose host another `tls` entry already
+covers, forms no site and is not reported.)
+
+What the agent sends: with the switch on it also sends, for each annotated site, the annotated Ingress's name, the CA
+value and the alert email. Nothing else is read from the annotations.
+
+For whoever owns the cluster: with the switch on, anyone who can edit an Ingress in the namespaces the agent reads can
+ask for a certificate for any of the organization's names. That stays behind an admin's approval unless the agent is
+set to fully automatic. Use `namespaces` to limit where the agent looks.
+
+Proving control of the domain: the `_acme-challenge` CNAME records are added automatically only when the zone is in a
+Cloudflare or Route 53 account connected in the portal. Otherwise the site waits as "Waiting for DNS", with the records
+to add.
 
 The annotations, all on the Ingress:
 
 | Key | Value |
 |-----|-------|
-| `autopilot.nslookup.io/enabled` | `"true"` turns Autopilot on (anything else is off) |
+| `autopilot.nslookup.io/enabled` | on for any value Go's `ParseBool` reads as true (`true`, `1`, `t`, `T`, `TRUE`, `True`); anything else is off |
 | `autopilot.nslookup.io/ca` | the certificate authority: `letsencrypt`, `gts` or `zerossl` (any case; another value is reported as a problem, never replaced by a default) |
-| `autopilot.nslookup.io/alert-email` | an extra address for the certificate's alerts, on top of your organization's recipients (it must belong to a member of the organization) |
+| `autopilot.nslookup.io/alert-email` | an extra address for the certificate's alerts, on top of your organization's recipients (it must belong to a member who joined the organization by invitation; otherwise it is ignored and the agent's default address, set on the agent's page, is used) |
 
-Removing the annotation stops renewals. The certificate already installed stays in the secret until it expires.
+Removing the annotation stops renewals only while both switches are on. Turning either switch off never stops a site
+that is already running: it keeps renewing until an admin uses "Stop and ignore" on the agent's page. Either way, the
+certificate already installed stays in the secret until it expires.
+
+Narrowing `namespaces` hides the Ingresses outside them: their sites count as gone, and Autopilot stops renewing them
+after 24 hours (the installed certificate stays until it expires).
+
 An Ingress that also asks cert-manager (`cert-manager.io/issuer`, `cert-manager.io/cluster-issuer`, a true
-`kubernetes.io/tls-acme`) is skipped, as is a secret the agent never writes (below).
+`kubernetes.io/tls-acme`) is skipped, as is a secret the agent never writes (above).
 
 ### agent.yaml
 

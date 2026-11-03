@@ -340,6 +340,36 @@ render "$tmp/annotations-off" --set annotations.enabled=false
 if grep -q NSL_ANNOTATIONS "$tmp/annotations-off"; then
 	fail "annotations.enabled=false: NSL_ANNOTATIONS must not be set"
 fi
+# A string counts as what it says, and anything that is not true or false is refused with a clear message.
+render "$tmp/annotations-str-off" --set-string annotations.enabled=false
+if grep -q NSL_ANNOTATIONS "$tmp/annotations-str-off"; then
+	fail 'annotations.enabled="false" (a string): NSL_ANNOTATIONS must not be set'
+fi
+render "$tmp/annotations-str-on" --set-string annotations.enabled=true
+env_is "$tmp/annotations-str-on" 'the environment with annotations.enabled="true" (a string)' "$tmp/want"
+refused() {
+	what=$1
+	want_text=$2
+	shift 2
+	if helm template "$release" "$chart" --namespace "$ns" "$@" >/dev/null 2>"$tmp/helm-error"; then
+		fail "$what: helm template must fail"
+	elif ! grep -qF "$want_text" "$tmp/helm-error"; then
+		fail "$what: the error must say '$want_text', got: $(cat "$tmp/helm-error")"
+	fi
+}
+refused "annotations=true" "annotations is a map" --set annotations=true
+refused "annotations.enabled=yes" "annotations.enabled is true or false" --set-string annotations.enabled=yes
+refused "annotations.enabled=1" "annotations.enabled is true or false" --set annotations.enabled=1
+# Turning it on changes the environment only: the rules are the ones of the default render.
+render "$tmp/annotations-rules" --set annotations.enabled=true
+rules ClusterRole "" "$tmp/annotations-rules" "annotations.enabled: the ClusterRole's rules" "$tmp/agent-rules"
+docs ClusterRole <"$tmp/default" >"$tmp/a"
+docs ClusterRole <"$tmp/annotations-rules" >"$tmp/b"
+same "annotations.enabled: the ClusterRole must be the default one" "$tmp/a" "$tmp/b"
+render "$tmp/annotations-limited" --set annotations.enabled=true --set "namespaces={a,b}"
+rules Role a "$tmp/annotations-limited" "annotations.enabled, namespaces a,b: the Role in a" "$tmp/agent-rules"
+rules Role "$ns" "$tmp/annotations-limited" "annotations.enabled, namespaces a,b: the identity Role" "$tmp/identity-rules"
+no_ingress_writes "$tmp/annotations-rules" "annotations.enabled"
 # An old release's values have no annotations key: null drops the chart's own default, as --reuse-values does.
 printf 'annotations: null\n' >"$tmp/null-values.yaml"
 render "$tmp/null" -f "$tmp/null-values.yaml"
