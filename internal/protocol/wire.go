@@ -128,6 +128,8 @@ type WebServer struct {
 type KubernetesFacts struct {
 	Version           string  `json:"version"`
 	IngressController *string `json:"ingressController"`
+	// Annotations: the agent reports each Ingress's Autopilot annotations (the Helm value annotations.enabled).
+	Annotations bool `json:"annotations"`
 }
 
 // CertFacts describes a served certificate (the leaf only).
@@ -155,7 +157,30 @@ type Site struct {
 	Owner       *SiteOwner   `json:"owner"`
 	CertbotName *string      `json:"certbotName"`
 	Blocked     *SiteBlocked `json:"blocked"`
+	// Autopilot is what the Ingresses of the site's secret annotate (null: none does, or annotations are off).
+	Autopilot *SiteAutopilot `json:"autopilot"`
 }
+
+// SiteAutopilot is the agent's report of the Autopilot annotations of the Ingresses using a site's secret: only the
+// values, the server decides what they mean.
+type SiteAutopilot struct {
+	// Ingress is the first annotated Ingress by name.
+	Ingress string `json:"ingress"`
+	// CA and AlertEmail are the raw values (clipped) of the first annotated Ingress that names one.
+	CA         *string `json:"ca"`
+	AlertEmail *string `json:"alertEmail"`
+	// TLSSection is false for a host served without TLS (the secret is made for it).
+	TLSSection bool `json:"tlsSection"`
+	// Conflict: two annotated Ingresses name different CAs or alert emails.
+	Conflict bool `json:"conflict"`
+}
+
+// The annotations of an Ingress the agent reports.
+const (
+	AnnotationEnabled    = "autopilot.nslookup.io/enabled"
+	AnnotationCA         = "autopilot.nslookup.io/ca"
+	AnnotationAlertEmail = "autopilot.nslookup.io/alert-email"
+)
 
 // SecretRef names a Kubernetes TLS secret and the ingress using it.
 type SecretRef struct {
