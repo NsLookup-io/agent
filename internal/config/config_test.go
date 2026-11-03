@@ -336,3 +336,17 @@ func TestNamespaces(t *testing.T) {
 		}
 	}
 }
+
+func TestAnnotations(t *testing.T) {
+	for raw, want := range map[string]bool{"": false, " ": false, "false": false, "true": true, " true\n": true} {
+		got, err := Annotations(raw)
+		if err != nil || got != want {
+			t.Errorf("Annotations(%q) = %v, %v; want %v", raw, got, err, want)
+		}
+	}
+	for _, raw := range []string{"yes", "1", "TRUE", "on"} {
+		if got, err := Annotations(raw); err == nil || !strings.Contains(err.Error(), "true or false") {
+			t.Errorf("Annotations(%q) = %v, %v; want an error naming true and false", raw, got, err)
+		}
+	}
+}

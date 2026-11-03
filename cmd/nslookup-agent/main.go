@@ -60,6 +60,10 @@ Flags:
                        with the join code, else the host name)
   --namespaces <list>  kubernetes mode: the namespaces whose Ingresses it reads and whose TLS secrets it
                        may write, comma-separated (environment NSL_NAMESPACES; default: every namespace)
+  --annotations <true|false>
+                       kubernetes mode: report the autopilot.nslookup.io/ annotations of the Ingresses, which
+                       lets them turn on Autopilot once the portal allows it too (environment
+                       NSL_ANNOTATIONS; default false)
   --join <code>        run only: join first when this agent has not joined yet (environment NSL_JOIN)
 
 Every flag takes its value as --flag=value or as --flag value; either way a value that starts with a dash is
@@ -161,7 +165,7 @@ func parseFlags(cmd string, args []string) (options, []string, error) {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	o := options{values: map[string]*string{}, set: map[string]bool{}}
-	names := []string{"server", "config", "mode", "name", "namespaces"}
+	names := []string{"server", "config", "mode", "name", "namespaces", "annotations"}
 	if cmd == "run" {
 		names = append(names, "join")
 	}
@@ -196,6 +200,8 @@ type settings struct {
 	name       *string
 	kind       protocol.AgentKind
 	namespaces []string
+	// annotations: report the Autopilot annotations of the Ingresses (Kubernetes mode only).
+	annotations bool
 	// join is the join code of --join or NSL_JOIN, trimmed; "" when none.
 	join string
 	// folderRoot is where folder certificates are written ("" = folder mode is not set up); reloadContainers and
@@ -263,6 +269,14 @@ func (c *cli) resolve(o options) (settings, error) {
 			return s, fmt.Errorf("%s: %w", from, err)
 		}
 		if len(s.namespaces) > 0 && s.kind != protocol.KindKubernetes {
+			return s, fmt.Errorf("%s is for --mode kubernetes only", from)
+		}
+	}
+	if raw, from, ok := c.pick(o, "annotations", "NSL_ANNOTATIONS"); ok {
+		if s.annotations, err = config.Annotations(raw); err != nil {
+			return s, fmt.Errorf("%s: %w", from, err)
+		}
+		if s.annotations && s.kind != protocol.KindKubernetes {
 			return s, fmt.Errorf("%s is for --mode kubernetes only", from)
 		}
 	}
@@ -551,15 +565,15 @@ func (c *cli) parts(s settings) (parts, error) {
 		if err != nil {
 			return p, fmt.Errorf("connecting to the cluster: %w", err)
 		}
-		namespaces := s.namespaces
+		namespaces, annotations := s.namespaces, s.annotations
 		p.facts = func(ctx context.Context) protocol.AgentFacts {
 			f := machineFacts(os.ReadFile, os.Hostname)
-			f.Kubernetes = kube.Facts(ctx, cs, namespaces, false)
+			f.Kubernetes = kube.Facts(ctx, cs, namespaces, annotations)
 			return f
 		}
 		var owned []string
 		p.inventory = func(ctx context.Context) (protocol.Inventory, error) {
-			inv, o, err := kube.ReadInventory(ctx, cs, namespaces, false)
+			inv, o, err := kube.ReadInventory(ctx, cs, namespaces, annotations)
 			if err == nil {
 				owned = o
 			}

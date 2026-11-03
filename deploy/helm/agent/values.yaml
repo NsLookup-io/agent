@@ -15,6 +15,12 @@ server: ""
 # ClusterRole. Else one Role per namespace, for example --set "namespaces={shop,blog}".
 namespaces: []
 
+# Let Ingresses turn on Autopilot with the annotation autopilot.nslookup.io/enabled: "true". The agent then reports
+# those annotations; it still never edits an Ingress. The portal has its own switch on the agent's page, and both must
+# be on.
+annotations:
+  enabled: false
+
 image:
   repository: ghcr.io/nslookup-io/agent
   # Default: the chart's appVersion.
