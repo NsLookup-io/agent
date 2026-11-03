@@ -378,6 +378,12 @@ func TestInventoryAnnotations(t *testing.T) {
 			t.Fatalf("autopilot = %+v, want a conflict on the alert email", sites[0].Autopilot)
 		}
 	})
+	t.Run("the same CA in another case is no conflict", func(t *testing.T) {
+		_, sites := read(t, true, enabled(shop("a"), protocol.AnnotationCA, "ZeroSSL"), enabled(shop("b"), protocol.AnnotationCA, "zerossl"))
+		if len(sites) != 1 || sites[0].Autopilot.Conflict {
+			t.Fatalf("sites = %+v, want no conflict", sites)
+		}
+	})
 	t.Run("an Ingress that is not annotated adds no values", func(t *testing.T) {
 		plain := shop("a")
 		annotated(plain, protocol.AnnotationCA, "gts")

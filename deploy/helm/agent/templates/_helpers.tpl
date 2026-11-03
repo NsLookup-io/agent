@@ -53,3 +53,23 @@ Ingress, never lists or deletes a Secret, and needs nothing else.
 {{- end -}}
 {{- $namespaces | uniq | toJson -}}
 {{- end -}}
+
+{{/*
+"true" when annotations.enabled is on, else nothing. It is a bool or the string "true" / "false" (--set-string gives a
+string, and any non-empty string would read as true); anything else is refused. annotations itself is a map, or absent.
+*/}}
+{{- define "agent.annotationsEnabled" -}}
+{{- $annotations := .Values.annotations | default dict -}}
+{{- if not (kindIs "map" $annotations) -}}
+{{- fail "annotations is a map, for example --set annotations.enabled=true" -}}
+{{- end -}}
+{{- $enabled := get $annotations "enabled" -}}
+{{- if or (not (hasKey $annotations "enabled")) (kindIs "invalid" $enabled) -}}
+{{- else if kindIs "bool" $enabled -}}
+{{- if $enabled -}}true{{- end -}}
+{{- else if and (kindIs "string" $enabled) (or (eq $enabled "true") (eq $enabled "false")) -}}
+{{- if eq $enabled "true" -}}true{{- end -}}
+{{- else -}}
+{{- fail (printf "annotations.enabled is true or false, not %v" $enabled) -}}
+{{- end -}}
+{{- end -}}

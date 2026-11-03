@@ -175,3 +175,34 @@ func TestAKubernetesAgentNamesTheSitesItInstalledOn(t *testing.T) {
 		t.Errorf("owned %v, want [%s]", got, want)
 	}
 }
+
+// The annotations switch reaches both what the agent says about itself (facts) and what it reads (the inventory).
+func TestAnnotationsSwitchReachesFactsAndInventory(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		h := newCLI(t)
+		ing := &networkingv1.Ingress{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web", Annotations: map[string]string{protocol.AnnotationEnabled: "true"}},
+			Spec: networkingv1.IngressSpec{
+				TLS:   []networkingv1.IngressTLS{{Hosts: []string{"shop.example.test"}, SecretName: "shop-tls"}},
+				Rules: []networkingv1.IngressRule{{Host: "shop.example.test"}},
+			},
+		}
+		cs := fake.NewClientset(ing)
+		h.cli.kube = func() (kubernetes.Interface, string, error) { return cs, "agents", nil }
+		p, err := h.cli.parts(settings{kind: protocol.KindKubernetes, annotations: on})
+		if err != nil {
+			t.Fatal(err)
+		}
+		facts := p.facts(context.Background())
+		if facts.Kubernetes == nil || facts.Kubernetes.Annotations != on {
+			t.Errorf("annotations %v: facts = %+v", on, facts.Kubernetes)
+		}
+		inv, err := p.inventory(context.Background())
+		if err != nil || len(inv.Sites) != 1 {
+			t.Fatalf("annotations %v: %+v, %v", on, inv, err)
+		}
+		if got := inv.Sites[0].Autopilot != nil; got != on {
+			t.Errorf("annotations %v: a site carries autopilot = %v", on, got)
+		}
+	}
+}
