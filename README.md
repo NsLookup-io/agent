@@ -151,6 +151,7 @@ helm install nslookup-agent oci://ghcr.io/nslookup-io/charts/agent -n nslookup-a
 | `name` | the agent's name in the portal |
 | `server` | the server, when it is not `https://agents.nslookup.io` |
 | `namespaces` | only these namespaces, as in `--set "namespaces={shop,blog}"` (default: every namespace) |
+| `annotations.enabled` | let Ingresses turn on Autopilot with an annotation (default `false`; see [Turn on Autopilot from an Ingress](#turn-on-autopilot-from-an-ingress)) |
 | `image.repository`, `image.tag` | `ghcr.io/nslookup-io/agent`, the chart's version |
 | `resources` | requests 10m CPU and 32 MiB, limit 128 MiB |
 
@@ -224,6 +225,7 @@ nslookup-agent version
 | `--name <name>` | `NSL_NAME` | the agent's name in the portal (default: the name given with the join code, else the host name) |
 | `--mode <mode>` | `NSL_MODE` | `host` (default), `docker` or `kubernetes` (the Docker image sets `NSL_MODE=docker`) |
 | `--namespaces <list>` | `NSL_NAMESPACES` | Kubernetes only: the namespaces whose Ingresses it reads and whose TLS secrets it may write, comma-separated (default: all) |
+| `--annotations <true\|false>` | `NSL_ANNOTATIONS` | Kubernetes only: report the Autopilot annotations of the Ingresses (default `false`; see [Turn on Autopilot from an Ingress](#turn-on-autopilot-from-an-ingress)) |
 | `--join <code>` | `NSL_JOIN` | `run` only: join first when the agent has not joined yet (how Docker and the Helm chart start it) |
 | `--config <path>` | | the configuration file (default `/etc/nslookup-agent/agent.yaml`) |
 | | `NSL_FOLDER_ROOT` | Docker only: the folder certificates are written in (default `/certs`) |
@@ -405,6 +407,51 @@ It connects with its pod's service account (outside the cluster: `KUBECONFIG`) a
 `watch` and Secrets `get`, `create`, `update`, `patch`, nothing else. Its identity is the Secret
 `nslookup-agent-identity` in its own namespace (`POD_NAMESPACE`), created once when it joins and never replaced: delete
 it to join again. Removing the agent leaves the TLS secrets it wrote as they are.
+
+### Turn on Autopilot from an Ingress
+
+Say the shop team keeps its manifests in git. To put `shop.example.com` under SSL Autopilot, they add one line to the
+Ingress they already have:
+
+```yaml
+metadata:
+  name: web
+  namespace: shop
+  annotations:
+    autopilot.nslookup.io/enabled: "true"
+spec:
+  tls:
+    - hosts: [shop.example.com, www.shop.example.com]
+      secretName: shop-example-com-tls
+```
+
+Within a few minutes the agent reports the site, and it shows on the agent's page in the portal as needing approval.
+An admin approves it once; nslookup.io then creates a certificate for both names (or uses one that already covers
+them), proves the domain, issues it, and the agent writes it into `shop/shop-example-com-tls`. Every renewal after that
+installs by itself: renewals never wait for anyone.
+
+Two switches must both be on, and neither does anything alone:
+
+1. In the cluster: Helm `annotations.enabled=true` (`--set annotations.enabled=true`), or `--annotations=true` /
+   `NSL_ANNOTATIONS=true`. Without it the agent does not read the annotations at all. Kubernetes mode only.
+2. In the portal: the setting "Let Ingresses turn on Autopilot by annotation" on the agent's page.
+
+An admin approves each new site once, unless the agent is set to fully automatic in the portal; then the certificate
+is created without the click. The agent never edits the Ingress: the annotation is yours to add and remove. The
+Ingress needs a `tls` section naming the secret; an annotated Ingress without one is reported as a problem and nothing
+is created.
+
+The annotations, all on the Ingress:
+
+| Key | Value |
+|-----|-------|
+| `autopilot.nslookup.io/enabled` | `"true"` turns Autopilot on (anything else is off) |
+| `autopilot.nslookup.io/ca` | the certificate authority: `letsencrypt`, `gts` or `zerossl` (any case; another value is reported as a problem, never replaced by a default) |
+| `autopilot.nslookup.io/alert-email` | an extra address for the certificate's alerts, on top of your organization's recipients (it must belong to a member of the organization) |
+
+Removing the annotation stops renewals. The certificate already installed stays in the secret until it expires.
+An Ingress that also asks cert-manager (`cert-manager.io/issuer`, `cert-manager.io/cluster-issuer`, a true
+`kubernetes.io/tls-acme`) is skipped, as is a secret the agent never writes (below).
 
 ### agent.yaml
 

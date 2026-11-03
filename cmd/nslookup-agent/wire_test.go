@@ -27,7 +27,6 @@ import (
 
 	"github.com/nslookup-io/agent/internal/agent"
 	"github.com/nslookup-io/agent/internal/config"
-	"github.com/nslookup-io/agent/internal/kube"
 	"github.com/nslookup-io/agent/internal/protocol"
 	"github.com/nslookup-io/agent/internal/version"
 )
@@ -359,10 +358,8 @@ func TestWireSamples(t *testing.T) {
 		cs := kubeCluster(t, true)
 		h := newCLI(t)
 		h.cli.kube = func() (kubernetes.Interface, string, error) { return cs, "agents", nil }
-		p := h.parts(settings{kind: protocol.KindKubernetes})
-		p.inventory = func(ctx context.Context) (protocol.Inventory, error) { return kube.Inventory(ctx, cs, nil, true) }
 		s := &wireServer{annotations: true}
-		runLoop(t, p, protocol.KindKubernetes, s)
+		runLoop(t, h.parts(settings{kind: protocol.KindKubernetes, annotations: true}), protocol.KindKubernetes, s)
 		sample(t, "heartbeat-kubernetes-annotations.json", s.beats[0])
 	})
 

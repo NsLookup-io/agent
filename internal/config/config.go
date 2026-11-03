@@ -456,3 +456,16 @@ func Namespaces(raw string) ([]string, error) {
 	}
 	return list, nil
 }
+
+// Annotations reads the switch that makes a Kubernetes agent report the Autopilot annotations of its Ingresses: true or
+// false (blank is false).
+func Annotations(raw string) (bool, error) {
+	switch v := strings.TrimSpace(raw); v {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s is not true or false", v)
+	}
+}

@@ -320,6 +320,33 @@ expect "$tmp/want" '            - name: POD_NAMESPACE
                   optional: true'
 env_is "$tmp/existing" "the environment with existingJoinSecret" "$tmp/want"
 
+## Annotations: off by default (no variable), on with annotations.enabled, and a release whose old values have no
+## annotations key (helm upgrade --reuse-values) still renders.
+
+if grep -q NSL_ANNOTATIONS "$tmp/default"; then
+	fail "default: NSL_ANNOTATIONS must not be set"
+fi
+render "$tmp/annotations" --set annotations.enabled=true
+expect "$tmp/want" '            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: NSL_MODE
+              value: kubernetes
+            - name: NSL_ANNOTATIONS
+              value: "true"'
+env_is "$tmp/annotations" "the environment with annotations.enabled" "$tmp/want"
+render "$tmp/annotations-off" --set annotations.enabled=false
+if grep -q NSL_ANNOTATIONS "$tmp/annotations-off"; then
+	fail "annotations.enabled=false: NSL_ANNOTATIONS must not be set"
+fi
+# An old release's values have no annotations key: null drops the chart's own default, as --reuse-values does.
+printf 'annotations: null\n' >"$tmp/null-values.yaml"
+render "$tmp/null" -f "$tmp/null-values.yaml"
+if grep -q NSL_ANNOTATIONS "$tmp/null"; then
+	fail "annotations: null: NSL_ANNOTATIONS must not be set"
+fi
+
 ## Nothing anywhere names the identity Secret except the identity Role.
 
 for f in "$tmp/default" "$tmp/limited" "$tmp/join" "$tmp/existing"; do

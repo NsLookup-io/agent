@@ -244,6 +244,28 @@ func TestTheEnvironmentCountsWhenAFlagIsNotGivenAndAgentYAMLWhenNeitherIs(t *tes
 	}
 }
 
+func TestAnnotationsComeFromTheFlagOrTheEnvironmentInKubernetesMode(t *testing.T) {
+	h := newCLI(t)
+	if s, _, err := h.settingsOf("run", "--mode=kubernetes"); err != nil || s.annotations {
+		t.Fatalf("default: %+v, %v", s, err)
+	}
+	h.env = map[string]string{"NSL_ANNOTATIONS": "true"}
+	if s, _, err := h.settingsOf("run", "--mode=kubernetes"); err != nil || !s.annotations {
+		t.Fatalf("environment: %+v, %v", s, err)
+	}
+	if s, _, err := h.settingsOf("run", "--mode=kubernetes", "--annotations=false"); err != nil || s.annotations {
+		t.Fatalf("a flag counts first: %+v, %v", s, err)
+	}
+	h.env = nil
+	if s, _, err := h.settingsOf("run", "--mode=kubernetes", "--annotations=true"); err != nil || !s.annotations {
+		t.Fatalf("flag: %+v, %v", s, err)
+	}
+	// Off is allowed anywhere: the chart-less default needs no mode.
+	if s, _, err := h.settingsOf("run", "--annotations=false"); err != nil || s.annotations {
+		t.Fatalf("off in host mode: %+v, %v", s, err)
+	}
+}
+
 // The image sets NSL_MODE=docker; the Helm chart runs it with --mode=kubernetes.
 func TestTheModeComesFromNSL_MODEWhenNoFlagGivesIt(t *testing.T) {
 	h := newCLI(t)
@@ -289,6 +311,9 @@ func TestBadValuesAreRefusedNamingWhereTheyCameFrom(t *testing.T) {
 		{"NSL_MODE", map[string]string{"NSL_MODE": "vm"}, "", []string{"run"}, "NSL_MODE must be host, docker or kubernetes"},
 		{"namespaces outside kubernetes", nil, "", []string{"run", "--namespaces=web"}, "--namespaces is for --mode kubernetes only"},
 		{"NSL_NAMESPACES outside kubernetes", map[string]string{"NSL_NAMESPACES": "web"}, "", []string{"run", "--mode=docker"}, "NSL_NAMESPACES is for --mode kubernetes only"},
+		{"annotations outside kubernetes", nil, "", []string{"run", "--annotations=true"}, "--annotations is for --mode kubernetes only"},
+		{"NSL_ANNOTATIONS outside kubernetes", map[string]string{"NSL_ANNOTATIONS": "true"}, "", []string{"run", "--mode=host"}, "NSL_ANNOTATIONS is for --mode kubernetes only"},
+		{"a bad NSL_ANNOTATIONS", map[string]string{"NSL_ANNOTATIONS": "yes"}, "", []string{"run", "--mode=kubernetes"}, "NSL_ANNOTATIONS: yes is not true or false"},
 		{"a bad namespace", nil, "", []string{"run", "--mode=kubernetes", "--namespaces=Web"}, `--namespaces: "Web" is not a Kubernetes namespace name`},
 		{"NSL_FOLDER_ROOT outside docker", map[string]string{"NSL_FOLDER_ROOT": "/srv/certs"}, "", []string{"run"}, "NSL_FOLDER_ROOT is for --mode docker only"},
 		{"NSL_RELOAD_CONTAINER outside docker", map[string]string{"NSL_RELOAD_CONTAINER": "nginx"}, "", []string{"run", "--mode=kubernetes"}, "NSL_RELOAD_CONTAINER is for --mode docker only"},

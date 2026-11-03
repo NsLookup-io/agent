@@ -69,6 +69,10 @@ spec:
             - name: NSL_NAMESPACES
               value: {{ join "," . | quote }}
             {{- end }}
+            {{- if (.Values.annotations | default dict).enabled }}
+            - name: NSL_ANNOTATIONS
+              value: "true"
+            {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
