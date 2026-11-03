@@ -554,12 +554,12 @@ func (c *cli) parts(s settings) (parts, error) {
 		namespaces := s.namespaces
 		p.facts = func(ctx context.Context) protocol.AgentFacts {
 			f := machineFacts(os.ReadFile, os.Hostname)
-			f.Kubernetes = kube.Facts(ctx, cs, namespaces)
+			f.Kubernetes = kube.Facts(ctx, cs, namespaces, false)
 			return f
 		}
 		var owned []string
 		p.inventory = func(ctx context.Context) (protocol.Inventory, error) {
-			inv, o, err := kube.ReadInventory(ctx, cs, namespaces)
+			inv, o, err := kube.ReadInventory(ctx, cs, namespaces, false)
 			if err == nil {
 				owned = o
 			}

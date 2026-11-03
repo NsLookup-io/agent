@@ -27,6 +27,7 @@ import (
 
 	"github.com/nslookup-io/agent/internal/agent"
 	"github.com/nslookup-io/agent/internal/config"
+	"github.com/nslookup-io/agent/internal/kube"
 	"github.com/nslookup-io/agent/internal/protocol"
 	"github.com/nslookup-io/agent/internal/version"
 )
@@ -173,7 +174,7 @@ func fixture(t *testing.T, p string) string {
 }
 
 // wireFacts are the facts every sample carries (the machine's own would differ from one test run to the next).
-func wireFacts(kind protocol.AgentKind) func(context.Context) protocol.AgentFacts {
+func wireFacts(kind protocol.AgentKind, annotations bool) func(context.Context) protocol.AgentFacts {
 	return func(context.Context) protocol.AgentFacts {
 		f := protocol.AgentFacts{OS: "linux", OSVersion: "Debian GNU/Linux 12 (bookworm)", Arch: "amd64", Hostname: "web-1", AgentVersion: "1.0.0"}
 		switch kind {
@@ -182,7 +183,7 @@ func wireFacts(kind protocol.AgentKind) func(context.Context) protocol.AgentFact
 				{Kind: protocol.WebServerHAProxy, Version: "2.6.12"}}
 		case protocol.KindKubernetes:
 			class := "nginx"
-			f.Kubernetes = &protocol.KubernetesFacts{Version: "1.31.2", IngressController: &class}
+			f.Kubernetes = &protocol.KubernetesFacts{Version: "1.31.2", IngressController: &class, Annotations: annotations}
 		}
 		return f
 	}
@@ -197,6 +198,8 @@ type wireServer struct {
 	bundles map[string]protocol.Bundle
 	beats   []protocol.HeartbeatRequest
 	results []protocol.InstallResult
+	// annotations: the Kubernetes facts say the agent reports annotations.
+	annotations bool
 }
 
 func (s *wireServer) Heartbeat(_ context.Context, beat protocol.HeartbeatRequest) (*protocol.HeartbeatResponse, error) {
@@ -230,7 +233,7 @@ func runLoop(t *testing.T, p parts, kind protocol.AgentKind, s *wireServer) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.cancel = cancel
-	loop := &agent.Loop{Client: s, Inventory: p.inventory, Facts: wireFacts(kind), Installer: p.installer, Folder: p.folder, Clock: s}
+	loop := &agent.Loop{Client: s, Inventory: p.inventory, Facts: wireFacts(kind, s.annotations), Installer: p.installer, Folder: p.folder, Clock: s}
 	if err := loop.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +319,7 @@ func TestWireSamples(t *testing.T) {
 		sample(t, "heartbeat-haproxy.json", s.beats[0])
 	})
 
-	t.Run("heartbeat kubernetes", func(t *testing.T) {
+	kubeCluster := func(t *testing.T, annotate bool) kubernetes.Interface {
 		ca := newWireCA(t)
 		leaf, key, _ := ca.issue(t, "shop-tls", "shop.example.test", "www.shop.example.test")
 		class := "nginx"
@@ -327,9 +330,13 @@ func TestWireSamples(t *testing.T) {
 			}
 			return ing
 		}
-		cs := fake.NewClientset(
-			ingress("shop", "storefront", []networkingv1.IngressTLS{{Hosts: []string{"shop.example.test", "www.shop.example.test"}, SecretName: "shop-tls"}},
-				"shop.example.test", "www.shop.example.test"),
+		storefront := ingress("shop", "storefront", []networkingv1.IngressTLS{{Hosts: []string{"shop.example.test", "www.shop.example.test"}, SecretName: "shop-tls"}},
+			"shop.example.test", "www.shop.example.test")
+		if annotate {
+			storefront.Annotations = map[string]string{protocol.AnnotationEnabled: "true", protocol.AnnotationCA: "ZeroSSL", protocol.AnnotationAlertEmail: "ops@example.test"}
+		}
+		return fake.NewClientset(
+			storefront,
 			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "shop-tls"}, Type: corev1.SecretTypeTLS,
 				Data: map[string][]byte{corev1.TLSCertKey: append(leaf, ca.pem...), corev1.TLSPrivateKeyKey: key}},
 			// Served without TLS: a site whose secret the agent makes when it is taken over.
@@ -337,11 +344,26 @@ func TestWireSamples(t *testing.T) {
 			// A tls entry whose secret is not there yet.
 			ingress("web", "docs", []networkingv1.IngressTLS{{Hosts: []string{"docs.example.test"}, SecretName: "docs-tls"}}, "docs.example.test"),
 		)
+	}
+	t.Run("heartbeat kubernetes", func(t *testing.T) {
+		cs := kubeCluster(t, false)
 		h := newCLI(t)
 		h.cli.kube = func() (kubernetes.Interface, string, error) { return cs, "agents", nil }
 		s := &wireServer{}
 		runLoop(t, h.parts(settings{kind: protocol.KindKubernetes}), protocol.KindKubernetes, s)
 		sample(t, "heartbeat-kubernetes.json", s.beats[0])
+	})
+
+	// An agent reporting annotations: the annotated Ingress's site carries them.
+	t.Run("heartbeat kubernetes annotations", func(t *testing.T) {
+		cs := kubeCluster(t, true)
+		h := newCLI(t)
+		h.cli.kube = func() (kubernetes.Interface, string, error) { return cs, "agents", nil }
+		p := h.parts(settings{kind: protocol.KindKubernetes})
+		p.inventory = func(ctx context.Context) (protocol.Inventory, error) { return kube.Inventory(ctx, cs, nil, true) }
+		s := &wireServer{annotations: true}
+		runLoop(t, p, protocol.KindKubernetes, s)
+		sample(t, "heartbeat-kubernetes-annotations.json", s.beats[0])
 	})
 
 	// The results: of an install on a server (its configuration test failing: the previous files go back), of a folder

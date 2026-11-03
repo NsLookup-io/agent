@@ -25,7 +25,7 @@ var secretsResource = schema.GroupResource{Resource: "secrets"}
 // readSites reads the cluster as the agent does, and the installer that writes on what it read.
 func readSites(t *testing.T, cs *fake.Clientset, namespaces ...string) (map[string]protocol.Site, *Installer) {
 	t.Helper()
-	inv, err := Inventory(context.Background(), cs, namespaces)
+	inv, err := Inventory(context.Background(), cs, namespaces, false)
 	if err != nil {
 		t.Fatal(err)
 	}

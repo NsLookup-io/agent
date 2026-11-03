@@ -71,7 +71,7 @@ func newFixture(t *testing.T) fixture {
 
 func TestInventoryReadsTheTLSSecretsOfEveryIngress(t *testing.T) {
 	f := newFixture(t)
-	inv, err := Inventory(context.Background(), f.cs, nil)
+	inv, err := Inventory(context.Background(), f.cs, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestInventoryReadsTheTLSSecretsOfEveryIngress(t *testing.T) {
 // The inventory holds no key material, and reading it changes nothing in the cluster.
 func TestInventoryNeverSendsAKeyNorWritesAnything(t *testing.T) {
 	f := newFixture(t)
-	inv, err := Inventory(context.Background(), f.cs, nil)
+	inv, err := Inventory(context.Background(), f.cs, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestInventoryNeverSendsAKeyNorWritesAnything(t *testing.T) {
 
 func TestInventoryReadsOnlyTheNamespacesGiven(t *testing.T) {
 	f := newFixture(t)
-	inv, err := Inventory(context.Background(), f.cs, []string{"shop", "web"})
+	inv, err := Inventory(context.Background(), f.cs, []string{"shop", "web"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestASecretTheAgentCannotRead(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	inv, err := Inventory(context.Background(), f.cs, nil)
+	inv, err := Inventory(context.Background(), f.cs, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestASecretTheAgentCannotRead(t *testing.T) {
 	f.cs.PrependReactor("get", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewServerTimeout(schema.GroupResource{Resource: "secrets"}, "get", 1)
 	})
-	if _, err := Inventory(context.Background(), f.cs, nil); err == nil {
+	if _, err := Inventory(context.Background(), f.cs, nil, false); err == nil {
 		t.Error("a timeout gave an inventory")
 	}
 
@@ -220,7 +220,7 @@ func TestASecretTheAgentCannotRead(t *testing.T) {
 	f.cs.PrependReactor("list", "ingresses", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "networking.k8s.io", Resource: "ingresses"}, "", errors.New("RBAC"))
 	})
-	if _, err := Inventory(context.Background(), f.cs, nil); err == nil || !strings.Contains(err.Error(), "Ingresses") {
+	if _, err := Inventory(context.Background(), f.cs, nil, false); err == nil || !strings.Contains(err.Error(), "Ingresses") {
 		t.Errorf("%v", err)
 	}
 }
@@ -247,16 +247,16 @@ func TestSecretNameForAHostWithoutTLS(t *testing.T) {
 func TestFactsNameTheClusterAndItsIngressController(t *testing.T) {
 	f := newFixture(t)
 	f.cs.Discovery().(*fakediscovery.FakeDiscovery).FakedServerVersion = &version.Info{GitVersion: "v1.31.2"}
-	facts := Facts(context.Background(), f.cs, nil)
+	facts := Facts(context.Background(), f.cs, nil, false)
 	if facts.Version != "1.31.2" || facts.IngressController == nil || *facts.IngressController != "nginx" {
 		t.Errorf("%+v %v", facts, ptrString(facts.IngressController))
 	}
 	// Only in api: traefik.
-	if facts := Facts(context.Background(), f.cs, []string{"api"}); *facts.IngressController != "traefik" {
+	if facts := Facts(context.Background(), f.cs, []string{"api"}, false); *facts.IngressController != "traefik" {
 		t.Errorf("%v", ptrString(facts.IngressController))
 	}
 	// No class anywhere.
-	if facts := Facts(context.Background(), cluster(), nil); facts.IngressController != nil {
+	if facts := Facts(context.Background(), cluster(), nil, false); facts.IngressController != nil {
 		t.Errorf("%v", ptrString(facts.IngressController))
 	}
 }
@@ -294,7 +294,7 @@ func TestTLSACMEAnnotationAsCertManagerReadsIt(t *testing.T) {
 func TestTheInventoryNamesTheSitesTheAgentInstalledOn(t *testing.T) {
 	f := newFixture(t)
 	sites, k := readSites(t, f.cs)
-	if _, owned, err := ReadInventory(context.Background(), f.cs, nil); err != nil || len(owned) != 0 {
+	if _, owned, err := ReadInventory(context.Background(), f.cs, nil, false); err != nil || len(owned) != 0 {
 		t.Fatalf("before any install: %v, %v", owned, err)
 	}
 	site := sites["shop-tls"]
@@ -302,8 +302,119 @@ func TestTheInventoryNamesTheSitesTheAgentInstalledOn(t *testing.T) {
 	if r := k.Apply(context.Background(), site, next.bundle(), next.work(site.SiteKey)); !r.OK {
 		t.Fatalf("%+v", r)
 	}
-	inv, owned, err := ReadInventory(context.Background(), f.cs, nil)
+	inv, owned, err := ReadInventory(context.Background(), f.cs, nil, false)
 	if err != nil || len(owned) != 1 || owned[0] != site.SiteKey || len(inv.Sites) != len(sites) {
 		t.Errorf("owned %v (want %s), %d sites, %v", owned, site.SiteKey, len(inv.Sites), err)
 	}
+}
+
+func TestInventoryAnnotations(t *testing.T) {
+	read := func(t *testing.T, annotations bool, objects ...runtime.Object) (*fake.Clientset, []protocol.Site) {
+		t.Helper()
+		cs := cluster(objects...)
+		inv, err := Inventory(context.Background(), cs, nil, annotations)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cs, inv.Sites
+	}
+	enabled := func(ing *networkingv1.Ingress, kv ...string) *networkingv1.Ingress {
+		annotated(ing, protocol.AnnotationEnabled, "true")
+		for i := 0; i < len(kv); i += 2 {
+			annotated(ing, kv[i], kv[i+1])
+		}
+		return ing
+	}
+	shop := func(name string) *networkingv1.Ingress {
+		return ingress("shop", name, []networkingv1.IngressTLS{tlsEntry("shop-tls", "shop.example.test")}, "shop.example.test")
+	}
+
+	t.Run("off", func(t *testing.T) {
+		_, sites := read(t, false, enabled(shop("web")))
+		if sites[0].Autopilot != nil {
+			t.Fatalf("autopilot = %+v with annotations off", sites[0].Autopilot)
+		}
+	})
+	t.Run("on", func(t *testing.T) {
+		_, sites := read(t, true, enabled(shop("web"), protocol.AnnotationCA, "ZeroSSL"))
+		want := &protocol.SiteAutopilot{Ingress: "web", CA: ptr("ZeroSSL"), TLSSection: true}
+		if !reflect.DeepEqual(sites[0].Autopilot, want) {
+			t.Fatalf("autopilot = %+v, want %+v", sites[0].Autopilot, want)
+		}
+	})
+	t.Run("not annotated", func(t *testing.T) {
+		_, sites := read(t, true, shop("web"))
+		if sites[0].Autopilot != nil {
+			t.Fatalf("autopilot = %+v", sites[0].Autopilot)
+		}
+	})
+	t.Run("not true", func(t *testing.T) {
+		ing := shop("web")
+		annotated(ing, protocol.AnnotationEnabled, "yes")
+		_, sites := read(t, true, ing)
+		if sites[0].Autopilot != nil {
+			t.Fatalf("autopilot = %+v for enabled: yes", sites[0].Autopilot)
+		}
+	})
+	t.Run("values are clipped and an email is reported", func(t *testing.T) {
+		_, sites := read(t, true, enabled(shop("web"), protocol.AnnotationCA, strings.Repeat("c", 100), protocol.AnnotationAlertEmail, " ops@example.test "))
+		a := sites[0].Autopilot
+		if len(*a.CA) != 64 || *a.AlertEmail != "ops@example.test" {
+			t.Fatalf("autopilot = %+v", a)
+		}
+	})
+	t.Run("shared secret", func(t *testing.T) {
+		_, sites := read(t, true, enabled(shop("b")), enabled(shop("a"), protocol.AnnotationCA, "zerossl"))
+		want := &protocol.SiteAutopilot{Ingress: "a", CA: ptr("zerossl"), TLSSection: true}
+		if len(sites) != 1 || !reflect.DeepEqual(sites[0].Autopilot, want) {
+			t.Fatalf("sites = %+v", sites)
+		}
+		_, sites = read(t, true, enabled(shop("a"), protocol.AnnotationCA, "zerossl"), enabled(shop("b"), protocol.AnnotationCA, "gts"))
+		if !sites[0].Autopilot.Conflict || *sites[0].Autopilot.CA != "zerossl" {
+			t.Fatalf("autopilot = %+v, want a conflict", sites[0].Autopilot)
+		}
+		_, sites = read(t, true, enabled(shop("a"), protocol.AnnotationAlertEmail, "x@example.test"), enabled(shop("b"), protocol.AnnotationAlertEmail, "y@example.test"))
+		if !sites[0].Autopilot.Conflict {
+			t.Fatalf("autopilot = %+v, want a conflict on the alert email", sites[0].Autopilot)
+		}
+	})
+	t.Run("an Ingress that is not annotated adds no values", func(t *testing.T) {
+		plain := shop("a")
+		annotated(plain, protocol.AnnotationCA, "gts")
+		_, sites := read(t, true, plain, enabled(shop("b"), protocol.AnnotationCA, "zerossl"))
+		a := sites[0].Autopilot
+		if a.Ingress != "b" || *a.CA != "zerossl" || a.Conflict {
+			t.Fatalf("autopilot = %+v", a)
+		}
+	})
+	t.Run("no tls", func(t *testing.T) {
+		_, sites := read(t, true, enabled(ingress("web", "status", nil, "status.example.test")))
+		site := siteByName(t, sites, "status-example-test-tls")
+		if site.Autopilot == nil || site.Autopilot.TLSSection {
+			t.Fatalf("autopilot = %+v, want one without a tls section", site.Autopilot)
+		}
+	})
+	t.Run("cert-manager", func(t *testing.T) {
+		ing := enabled(shop("web"))
+		annotated(ing, "cert-manager.io/cluster-issuer", "letsencrypt")
+		cs, sites := read(t, true, ing)
+		if sites[0].Owner == nil || *sites[0].Owner != protocol.OwnerCertManager || sites[0].Autopilot == nil {
+			t.Fatalf("site = %+v, want cert-manager's with its annotation reported", sites[0])
+		}
+		if w := writes(cs); len(w) != 0 {
+			t.Fatalf("writes = %v", w)
+		}
+	})
+	t.Run("writes", func(t *testing.T) {
+		cs, _ := read(t, true, enabled(shop("web")))
+		if w := writes(cs); len(w) != 0 {
+			t.Fatalf("writes = %v", w)
+		}
+	})
+	t.Run("facts", func(t *testing.T) {
+		cs := cluster()
+		if !Facts(context.Background(), cs, nil, true).Annotations || Facts(context.Background(), cs, nil, false).Annotations {
+			t.Fatal("facts do not carry the annotations switch")
+		}
+	})
 }

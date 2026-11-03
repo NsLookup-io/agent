@@ -40,6 +40,9 @@ const (
 	maxSiteNames    = 100
 	maxVersion      = 64
 	maxIngressClass = 128
+	// maxCA and maxAlertEmail clip the annotation values reported.
+	maxCA         = 64
+	maxAlertEmail = 254
 	// tlsSuffix ends the name of the secret made for a host served without TLS; maxSecretName is the longest name of a
 	// secret.
 	tlsSuffix     = "-tls"
@@ -60,7 +63,15 @@ type group struct {
 	// addresses are those the Ingresses list for their ingress controller (status.loadBalancer: IPs and host names),
 	// sorted, each once, at most maxAddresses: what the check after an install asks.
 	addresses []string
+	// annotated are the Ingresses using the secret that turn Autopilot on (autopilot.nslookup.io/enabled reads as true),
+	// sorted by name, with the CA and alert email each names.
+	annotated []annotation
+	// tls: a tls entry names the secret (false for the secret made for a host served without TLS).
+	tls bool
 }
+
+// annotation is what one annotated Ingress says; ca and email are clipped, "" when absent.
+type annotation struct{ ingress, ca, email string }
 
 // key is the site's key: "k8s_ingress|<namespace>/<first ingress>|<secret>".
 func (g *group) key() string {
@@ -72,15 +83,15 @@ func (g *group) key() string {
 // TLS, whose secret the agent makes when the site is taken over (the customer then adds it to the Ingress). A
 // secret the agent may not read is reported unreadable; any other failure fails the read, so the agent keeps sending
 // its last one instead of a list without those sites.
-func Inventory(ctx context.Context, cs kubernetes.Interface, namespaces []string) (protocol.Inventory, error) {
-	inv, _, err := ReadInventory(ctx, cs, namespaces)
+func Inventory(ctx context.Context, cs kubernetes.Interface, namespaces []string, annotations bool) (protocol.Inventory, error) {
+	inv, _, err := ReadInventory(ctx, cs, namespaces, annotations)
 	return inv, err
 }
 
 // ReadInventory is Inventory, and the keys of the sites whose secret carries the agent's own record of an install
 // (labelled as the agent's, annotated with the SHA-256 it wrote): sites the agent installed on, whose assignment the
-// server may have paused, so no work names them.
-func ReadInventory(ctx context.Context, cs kubernetes.Interface, namespaces []string) (protocol.Inventory, []string, error) {
+// server may have paused, so no work names them. With annotations, a site reports what its Ingresses annotate.
+func ReadInventory(ctx context.Context, cs kubernetes.Interface, namespaces []string, annotations bool) (protocol.Inventory, []string, error) {
 	ingresses, err := listIngresses(ctx, cs, namespaces)
 	if err != nil {
 		return protocol.Inventory{}, nil, err
@@ -93,7 +104,7 @@ func ReadInventory(ctx context.Context, cs kubernetes.Interface, namespaces []st
 		if err != nil && !forbidden {
 			return protocol.Inventory{}, nil, fmt.Errorf("reading the secret %s/%s: %w", g.namespace, g.secret, err)
 		}
-		site := g.site(secret, forbidden)
+		site := g.site(secret, forbidden, annotations)
 		inv.Sites = append(inv.Sites, site)
 		if recordOf(secret) != "" {
 			owned = append(owned, site.SiteKey)
@@ -104,9 +115,9 @@ func ReadInventory(ctx context.Context, cs kubernetes.Interface, namespaces []st
 }
 
 // Facts describes the cluster: its Kubernetes version, and its ingress controller as the most common ingress class of
-// the Ingresses read (none: null). What cannot be read is left empty.
-func Facts(ctx context.Context, cs kubernetes.Interface, namespaces []string) *protocol.KubernetesFacts {
-	facts := &protocol.KubernetesFacts{}
+// the Ingresses read (none: null), and whether it reports annotations. What cannot be read is left empty.
+func Facts(ctx context.Context, cs kubernetes.Interface, namespaces []string, annotations bool) *protocol.KubernetesFacts {
+	facts := &protocol.KubernetesFacts{Annotations: annotations}
 	if v, err := cs.Discovery().ServerVersion(); err == nil {
 		facts.Version = protocol.Clip(strings.TrimPrefix(v.GitVersion, "v"), maxVersion)
 	}
@@ -171,7 +182,7 @@ func listIngresses(ctx context.Context, cs kubernetes.Interface, namespaces []st
 func groupsOf(ingresses []networkingv1.Ingress) []*group {
 	type id struct{ namespace, secret string }
 	byID := map[id]*group{}
-	add := func(ing *networkingv1.Ingress, secret string, names []string) {
+	add := func(ing *networkingv1.Ingress, secret string, names []string, tls bool) {
 		g := byID[id{ing.Namespace, secret}]
 		if g == nil {
 			g = &group{namespace: ing.Namespace, secret: secret}
@@ -181,6 +192,11 @@ func groupsOf(ingresses []networkingv1.Ingress) []*group {
 		g.names = append(g.names, names...)
 		g.certManager = g.certManager || asksCertManager(ing)
 		g.addresses = append(g.addresses, controllerAddresses(ing)...)
+		g.tls = g.tls || tls
+		if on, _ := strconv.ParseBool(ing.Annotations[protocol.AnnotationEnabled]); on {
+			g.annotated = append(g.annotated, annotation{ing.Name, protocol.Clip(ing.Annotations[protocol.AnnotationCA], maxCA),
+				protocol.Clip(ing.Annotations[protocol.AnnotationAlertEmail], maxAlertEmail)})
+		}
 	}
 	var withTLS []string
 	for i := range ingresses {
@@ -194,7 +210,7 @@ func groupsOf(ingresses []networkingv1.Ingress) []*group {
 			withTLS = append(withTLS, names...)
 			// A tls entry without a secret is served with the controller's default certificate: no site.
 			if t.SecretName != "" && len(validation.IsDNS1123Subdomain(t.SecretName)) == 0 {
-				add(ing, t.SecretName, names)
+				add(ing, t.SecretName, names, true)
 			}
 		}
 	}
@@ -202,7 +218,7 @@ func groupsOf(ingresses []networkingv1.Ingress) []*group {
 		ing := &ingresses[i]
 		for _, host := range inventory.SiteNames(ruleHosts(ing)) {
 			if !servedWithTLS(withTLS, host) {
-				add(ing, secretNameFor(host), []string{host})
+				add(ing, secretNameFor(host), []string{host}, false)
 			}
 		}
 	}
@@ -211,6 +227,7 @@ func groupsOf(ingresses []networkingv1.Ingress) []*group {
 		g.ingresses = sortedUnique(g.ingresses)
 		g.names = sortedUnique(g.names)
 		g.addresses = sortedUnique(g.addresses)
+		g.annotated = uniqueAnnotations(g.annotated)
 		g.addresses = g.addresses[:min(len(g.addresses), maxAddresses)]
 		if len(g.names) > 0 {
 			groups = append(groups, g)
@@ -348,12 +365,16 @@ func verdict(g *group, s *corev1.Secret) (owner *protocol.SiteOwner, blocked *pr
 
 // site is what the agent reports of g with its secret as read (nil: none, or unreadable): the facts of the
 // certificate in its tls.crt, who manages it, why the agent may not write it.
-func (g *group) site(secret *corev1.Secret, unreadable bool) protocol.Site {
+// With annotations, it also reports what the Ingresses annotate; the install path never looks at it.
+func (g *group) site(secret *corev1.Secret, unreadable, annotations bool) protocol.Site {
 	s := protocol.Site{
 		SiteKey: g.key(),
 		Kind:    protocol.SiteK8sIngress,
 		Names:   g.names[:min(len(g.names), maxSiteNames)],
 		Secret:  &protocol.SecretRef{Namespace: g.namespace, Name: g.secret, Ingress: g.ingresses[0]},
+	}
+	if annotations {
+		s.Autopilot = g.autopilot()
 	}
 	s.Owner, s.Blocked = verdict(g, secret)
 	if unreadable && s.Blocked == nil {
@@ -365,6 +386,39 @@ func (g *group) site(secret *corev1.Secret, unreadable bool) protocol.Site {
 		}
 	}
 	return s
+}
+
+// uniqueAnnotations sorts by Ingress name, each Ingress once (it may name the secret in several tls entries).
+func uniqueAnnotations(a []annotation) []annotation {
+	slices.SortFunc(a, func(x, y annotation) int { return cmp.Compare(x.ingress, y.ingress) })
+	return slices.CompactFunc(a, func(x, y annotation) bool { return x.ingress == y.ingress })
+}
+
+// autopilot is what the annotated Ingresses of g say (nil: none is annotated): the first annotated Ingress by name, the
+// first CA and alert email any of them names, and whether two of them name different ones (compared ignoring case).
+func (g *group) autopilot() *protocol.SiteAutopilot {
+	if len(g.annotated) == 0 {
+		return nil
+	}
+	a := &protocol.SiteAutopilot{Ingress: g.annotated[0].ingress, TLSSection: g.tls}
+	pick := func(get func(annotation) string) (first *string, conflict bool) {
+		for _, n := range g.annotated {
+			v := get(n)
+			switch {
+			case v == "":
+			case first == nil:
+				first = ptr(v)
+			case !strings.EqualFold(*first, v):
+				conflict = true
+			}
+		}
+		return first, conflict
+	}
+	var caConflict, emailConflict bool
+	a.CA, caConflict = pick(func(n annotation) string { return n.ca })
+	a.AlertEmail, emailConflict = pick(func(n annotation) string { return n.email })
+	a.Conflict = caConflict || emailConflict
+	return a
 }
 
 // getSecret reads a secret: nil (and no error) when there is none.
