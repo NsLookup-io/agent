@@ -2317,3 +2317,44 @@ func TestAResultAddedBeforeTheLoopStartsIsSentFirst(t *testing.T) {
 		t.Error("a result that is not an assignment's was added")
 	}
 }
+
+// When emptying every Ingress list is not enough, the certificate names go next, from the last site back; the Ingress
+// list of a site the server assigns a certificate to goes as well (it is display only), its certificate names last.
+func TestAHeartbeatEmptiesEveryIngressListBeforeCertificateNames(t *testing.T) {
+	h := newHarness(t, 1)
+	inv := protocol.Inventory{}
+	for i := range 300 {
+		s := bigSite(i, 1, 250, 40)
+		s.Kind = protocol.SiteK8sIngress
+		s.CertPath = nil
+		ref := &protocol.SecretRef{Namespace: "web", Name: fmt.Sprintf("tls-%03d", i), Ingress: "ing-000"}
+		for j := range 50 {
+			ref.Ingresses = append(ref.Ingresses, protocol.IngressRef{Name: fmt.Sprintf("ing-%03d-%03d.%s", i, j, strings.Repeat("x", 40))})
+		}
+		s.Secret = ref
+		inv.Sites = append(inv.Sites, s)
+	}
+	assigned := inv.Sites[0].SiteKey
+	read := inv.Sites[0].Secret
+	cut, err := h.loop.fit(&inv, map[string]bool{assigned: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cut.ingresses != 300 || cut.sites != 0 || cut.names == 0 || cut.names == 299 {
+		t.Fatalf("left out %+v", cut)
+	}
+	if size := beatSize(t, protocol.HeartbeatRequest{Inventory: &inv}); size > maxHeartbeatBody {
+		t.Errorf("inventory of %d bytes", size)
+	}
+	for _, s := range inv.Sites {
+		if len(s.Secret.Ingresses) != 0 {
+			t.Fatalf("site %s keeps its Ingress list", s.SiteKey)
+		}
+	}
+	if len(inv.Sites[0].Served.Names) != 250 || len(inv.Sites[299].Served.Names) != 0 || len(inv.Sites[1].Served.Names) != 250 {
+		t.Errorf("served names: assigned %d, second %d, last %d", len(inv.Sites[0].Served.Names), len(inv.Sites[1].Served.Names), len(inv.Sites[299].Served.Names))
+	}
+	if len(read.Ingresses) != 50 {
+		t.Errorf("the read's secret was edited: %d Ingresses", len(read.Ingresses))
+	}
+}

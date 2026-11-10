@@ -547,6 +547,11 @@ func TestOwnerToolNamesWhoOwnsTheSecret(t *testing.T) {
 		{"flux", labelled("kustomize.toolkit.fluxcd.io/name", "apps"), &other, &ownedBy, tool(protocol.OwnerToolFlux)},
 		{"argo cd", func(s *corev1.Secret) { annotated(s, "argocd.argoproj.io/tracking-id", "shop:/Secret:shop/shop-tls") }, &other, &ownedBy, tool(protocol.OwnerToolArgoCD)},
 		{"helm", labelled(ManagedByLabel, "Helm"), &other, &ownedBy, tool(protocol.OwnerToolHelm)},
+		{"helm over an owner reference", func(s *corev1.Secret) {
+			labelled(ManagedByLabel, "Helm")(s)
+			s.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "owner", UID: "1"}}
+		}, &other, &ownedBy, tool(protocol.OwnerToolHelm)},
+		{"helm release annotation only", func(s *corev1.Secret) { annotated(s, "meta.helm.sh/release-name", "shop") }, &other, &ownedBy, tool(protocol.OwnerToolHelm)},
 		{"owner reference", func(s *corev1.Secret) {
 			s.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "owner", UID: "1"}}
 		}, &other, &ownedBy, tool(protocol.OwnerToolOwnerReference)},
