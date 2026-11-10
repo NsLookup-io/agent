@@ -95,7 +95,7 @@ func TestAKubernetesAgentReportsTheIngressesOfItsNamespaces(t *testing.T) {
 		t.Errorf("facts %s", h.stdout.String())
 	}
 	sites := out.Inventory.Sites
-	if len(sites) != 1 || sites[0].Kind != protocol.SiteK8sIngress || *sites[0].Secret != (protocol.SecretRef{Namespace: "shop", Name: "storefront-tls", Ingress: "storefront"}) {
+	if len(sites) != 1 || sites[0].Kind != protocol.SiteK8sIngress || sites[0].Secret.Namespace != "shop" || sites[0].Secret.Name != "storefront-tls" || sites[0].Secret.Ingress != "storefront" {
 		t.Errorf("sites %s", h.stdout.String())
 	}
 }

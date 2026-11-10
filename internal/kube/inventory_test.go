@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -101,8 +102,9 @@ func TestInventoryReadsTheTLSSecretsOfEveryIngress(t *testing.T) {
 	}
 	for _, w := range want {
 		s := siteByName(t, inv.Sites, w.secret)
-		ref := protocol.SecretRef{Namespace: w.namespace, Name: w.secret, Ingress: w.ingress}
-		if s.Kind != protocol.SiteK8sIngress || *s.Secret != ref || !reflect.DeepEqual(s.Names, w.names) {
+		ref := s.Secret
+		if s.Kind != protocol.SiteK8sIngress || ref.Namespace != w.namespace || ref.Name != w.secret || ref.Ingress != w.ingress ||
+			!reflect.DeepEqual(s.Names, w.names) {
 			t.Errorf("%s: %s %+v %v", w.secret, s.Kind, *s.Secret, s.Names)
 		}
 		if key := inventory.SiteKey(protocol.SiteK8sIngress, w.namespace+"/"+w.ingress, w.secret); s.SiteKey != key {
@@ -423,4 +425,156 @@ func TestInventoryAnnotations(t *testing.T) {
 			t.Fatal("facts do not carry the annotations switch")
 		}
 	})
+}
+
+// ingressNames are the names of a site's reported Ingresses, in order.
+func ingressNames(s protocol.Site) []string {
+	var names []string
+	for _, ing := range s.Secret.Ingresses {
+		names = append(names, ing.Name)
+	}
+	return names
+}
+
+func TestInventoryListsEveryIngressOfASecret(t *testing.T) {
+	cs := cluster(
+		ingress("shop", "b", []networkingv1.IngressTLS{tlsEntry("shop-tls", "b.shop.example.test")}),
+		// a names the secret in two tls entries: it is listed once.
+		ingress("shop", "a", []networkingv1.IngressTLS{tlsEntry("shop-tls", "a.shop.example.test"), tlsEntry("shop-tls", "www.a.shop.example.test")}),
+		ingress("shop", "c", []networkingv1.IngressTLS{tlsEntry("shop-tls", "c.shop.example.test")}),
+	)
+	inv, err := Inventory(context.Background(), cs, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := siteByName(t, inv.Sites, "shop-tls")
+	if s.Secret.Ingress != "a" || !reflect.DeepEqual(ingressNames(s), []string{"a", "b", "c"}) {
+		t.Fatalf("secret %+v", *s.Secret)
+	}
+}
+
+func TestInventoryListsAtMost200Ingresses(t *testing.T) {
+	var objects []runtime.Object
+	for i := range 250 {
+		name := fmt.Sprintf("ing-%03d", i)
+		objects = append(objects, ingress("shop", name, []networkingv1.IngressTLS{tlsEntry("shop-tls", name+".shop.example.test")}))
+	}
+	inv, err := Inventory(context.Background(), cluster(objects...), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := siteByName(t, inv.Sites, "shop-tls")
+	got := s.Secret.Ingresses
+	if len(got) != 200 || got[0].Name != "ing-000" || got[199].Name != "ing-199" {
+		t.Fatalf("%d Ingresses, first %v, last %v", len(got), got[0], got[len(got)-1])
+	}
+	if len(s.Names) != maxSiteNames {
+		t.Errorf("%d names, want %d", len(s.Names), maxSiteNames)
+	}
+}
+
+// An agent upgraded to report every Ingress keeps each site's key: the first Ingress names it, as before.
+func TestTheSiteKeyStaysTheFirstIngress(t *testing.T) {
+	cs := cluster(
+		ingress("shop", "b", []networkingv1.IngressTLS{tlsEntry("shop-tls", "b.shop.example.test")}),
+		ingress("shop", "a", []networkingv1.IngressTLS{tlsEntry("shop-tls", "a.shop.example.test")}),
+	)
+	inv, err := Inventory(context.Background(), cs, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := siteByName(t, inv.Sites, "shop-tls")
+	if want := inventory.SiteKey(protocol.SiteK8sIngress, "shop/a", "shop-tls"); s.SiteKey != want {
+		t.Fatalf("site key %s, want %s", s.SiteKey, want)
+	}
+}
+
+func TestEachIngressSaysWhichToolDeploysIt(t *testing.T) {
+	flux, argocd, helm := protocol.ToolFlux, protocol.ToolArgoCD, protocol.ToolHelm
+	for _, c := range []struct {
+		name                string
+		labels, annotations map[string]string
+		want                *protocol.DeployTool
+	}{
+		{"flux kustomization label", map[string]string{"kustomize.toolkit.fluxcd.io/name": "apps"}, nil, &flux},
+		{"flux helm release annotation", nil, map[string]string{"helm.toolkit.fluxcd.io/name": "shop"}, &flux},
+		{"argo cd tracking id", nil, map[string]string{"argocd.argoproj.io/tracking-id": "shop:networking.k8s.io/Ingress:shop/a"}, &argocd},
+		{"helm", map[string]string{ManagedByLabel: "Helm"}, nil, &helm},
+		{"helm in lower case", map[string]string{ManagedByLabel: "helm"}, nil, &helm},
+		{"helm release annotation", nil, map[string]string{"meta.helm.sh/release-name": "shop"}, &helm},
+		{"helm through flux", map[string]string{ManagedByLabel: "Helm", "helm.toolkit.fluxcd.io/name": "shop"}, nil, &flux},
+		{"another tool", map[string]string{ManagedByLabel: "pulumi"}, nil, nil},
+		{"only an instance label", map[string]string{"app.kubernetes.io/instance": "shop"}, nil, nil},
+		{"nothing", nil, nil, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ing := ingress("shop", "a", []networkingv1.IngressTLS{tlsEntry("shop-tls", "shop.example.test")})
+			ing.Labels, ing.Annotations = c.labels, c.annotations
+			inv, err := Inventory(context.Background(), cluster(ing), nil, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := siteByName(t, inv.Sites, "shop-tls").Secret.Ingresses
+			want := []protocol.IngressRef{{Name: "a", DeployedBy: c.want}}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("ingresses %v (deployed by %s), want %s", got, ptrString(got[0].DeployedBy), ptrString(c.want))
+			}
+		})
+	}
+}
+
+func TestOwnerToolNamesWhoOwnsTheSecret(t *testing.T) {
+	ca := newCA(t)
+	cert := ca.issue(t, "shop.example.test")
+	labelled := func(kv ...string) func(*corev1.Secret) {
+		return func(s *corev1.Secret) {
+			s.Labels = map[string]string{}
+			for i := 0; i < len(kv); i += 2 {
+				s.Labels[kv[i]] = kv[i+1]
+			}
+		}
+	}
+	other, cm := protocol.OwnerOther, protocol.OwnerCertManager
+	ownedBy, notTLS := protocol.BlockedOwnedByOther, protocol.BlockedSecretNotTLS
+	tool := func(t protocol.OwnerTool) *protocol.OwnerTool { return &t }
+	for _, c := range []struct {
+		name    string
+		secret  func(*corev1.Secret) // nil: no secret yet
+		owner   *protocol.SiteOwner
+		blocked *protocol.SiteBlocked
+		tool    *protocol.OwnerTool
+	}{
+		{"flux", labelled("kustomize.toolkit.fluxcd.io/name", "apps"), &other, &ownedBy, tool(protocol.OwnerToolFlux)},
+		{"argo cd", func(s *corev1.Secret) { annotated(s, "argocd.argoproj.io/tracking-id", "shop:/Secret:shop/shop-tls") }, &other, &ownedBy, tool(protocol.OwnerToolArgoCD)},
+		{"helm", labelled(ManagedByLabel, "Helm"), &other, &ownedBy, tool(protocol.OwnerToolHelm)},
+		{"owner reference", func(s *corev1.Secret) {
+			s.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "owner", UID: "1"}}
+		}, &other, &ownedBy, tool(protocol.OwnerToolOwnerReference)},
+		{"another tool", labelled(ManagedByLabel, "pulumi"), &other, &ownedBy, tool(protocol.OwnerToolOther)},
+		{"cert-manager", func(s *corev1.Secret) {
+			labelled("kustomize.toolkit.fluxcd.io/name", "apps")(s)
+			annotated(s, "cert-manager.io/certificate-name", "shop")
+		}, &cm, nil, nil},
+		{"writable", func(*corev1.Secret) {}, nil, nil, nil},
+		{"opaque", func(s *corev1.Secret) { s.Type = corev1.SecretTypeOpaque }, nil, &notTLS, nil},
+		{"no secret yet", nil, nil, nil, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			objects := []runtime.Object{ingress("shop", "a", []networkingv1.IngressTLS{tlsEntry("shop-tls", "shop.example.test")})}
+			if c.secret != nil {
+				s := tlsSecret("shop", "shop-tls", cert)
+				c.secret(s)
+				objects = append(objects, s)
+			}
+			inv, err := Inventory(context.Background(), cluster(objects...), nil, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := siteByName(t, inv.Sites, "shop-tls")
+			if !reflect.DeepEqual(s.Owner, c.owner) || !reflect.DeepEqual(s.Blocked, c.blocked) || !reflect.DeepEqual(s.OwnerTool, c.tool) {
+				t.Fatalf("owner %s, blocked %s, owner tool %s; want %s, %s, %s", ptrString(s.Owner), ptrString(s.Blocked), ptrString(s.OwnerTool),
+					ptrString(c.owner), ptrString(c.blocked), ptrString(c.tool))
+			}
+		})
+	}
 }

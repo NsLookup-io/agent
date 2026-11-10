@@ -2,6 +2,8 @@
 // they name, writes those secrets when the server assigns them a certificate, and keeps the agent's identity in a
 // Secret of the agent's own namespace.
 //
+// A site names every Ingress using its secret (the first 200 by name) and the deployment tool whose marks each carries.
+//
 // It never edits an Ingress, and never writes a secret cert-manager manages (the secret's cert-manager.io/ annotations,
 // or an Ingress using it that asks cert-manager for certificates), one another object owns (ownerReferences) or another
 // deployment tool deploys (Helm, Argo CD, Flux, any other app.kubernetes.io/managed-by), one of another type than
@@ -47,14 +49,18 @@ const (
 	// secret.
 	tlsSuffix     = "-tls"
 	maxSecretName = validation.DNS1123SubdomainMaxLength
+	// maxIngresses is the most Ingresses a site lists.
+	maxIngresses = 200
 )
 
 // group is one TLS secret and the Ingresses using it, or, for a host served without TLS, the secret made for it
 // and the Ingresses serving that host: one site, with every name served from it.
 type group struct {
 	namespace, secret string
-	// ingresses are sorted, each once; the site names the first.
+	// ingresses are sorted, each once; the site key names the first.
 	ingresses []string
+	// tools are the deployment tool of each Ingress, by name (nil: none known).
+	tools map[string]*protocol.DeployTool
 	// names are every name served from the secret, sorted, each once (the site reports the first 100).
 	names []string
 	// certManager: an Ingress using the secret asks cert-manager for its certificates, so the secret is cert-manager's
@@ -185,10 +191,13 @@ func groupsOf(ingresses []networkingv1.Ingress) []*group {
 	add := func(ing *networkingv1.Ingress, secret string, names []string, tls bool) {
 		g := byID[id{ing.Namespace, secret}]
 		if g == nil {
-			g = &group{namespace: ing.Namespace, secret: secret}
+			g = &group{namespace: ing.Namespace, secret: secret, tools: map[string]*protocol.DeployTool{}}
 			byID[id{ing.Namespace, secret}] = g
 		}
 		g.ingresses = append(g.ingresses, ing.Name)
+		if g.tools[ing.Name] == nil {
+			g.tools[ing.Name] = toolOf(ing.ObjectMeta)
+		}
 		g.names = append(g.names, names...)
 		g.certManager = g.certManager || asksCertManager(ing)
 		g.addresses = append(g.addresses, controllerAddresses(ing)...)
@@ -311,9 +320,65 @@ func managedByCertManager(s *corev1.Secret) bool {
 	return false
 }
 
+// argoCDPrefixes and fluxPrefixes are the label and annotation key prefixes of Argo CD and Flux.
+var (
+	argoCDPrefixes = []string{"argocd.argoproj.io/"}
+	fluxPrefixes   = []string{"kustomize.toolkit.fluxcd.io/", "helm.toolkit.fluxcd.io/"}
+)
+
 // deployerPrefixes are the label and annotation key prefixes of the deployment tools that sync what they deploy (Argo
 // CD, Flux).
-var deployerPrefixes = []string{"argocd.argoproj.io/", "kustomize.toolkit.fluxcd.io/", "helm.toolkit.fluxcd.io/"}
+var deployerPrefixes = slices.Concat(argoCDPrefixes, fluxPrefixes)
+
+// toolOf is the deployment tool whose marks m carries (nil: none): Flux or Argo CD by a label or annotation key under
+// their prefixes, Helm by app.kubernetes.io/managed-by "Helm" (any case) or its release annotation. Flux comes first,
+// then Argo CD: they sync what they deploy, Helm included (both set managed-by Helm when they deploy a chart).
+func toolOf(m metav1.ObjectMeta) *protocol.DeployTool {
+	switch {
+	case hasKeyUnder(m, fluxPrefixes):
+		return ptr(protocol.ToolFlux)
+	case hasKeyUnder(m, argoCDPrefixes):
+		return ptr(protocol.ToolArgoCD)
+	case strings.EqualFold(m.Labels[ManagedByLabel], "Helm"):
+		return ptr(protocol.ToolHelm)
+	}
+	if _, ok := m.Annotations["meta.helm.sh/release-name"]; ok {
+		return ptr(protocol.ToolHelm)
+	}
+	return nil
+}
+
+// hasKeyUnder reports whether a label or annotation key of m starts with one of prefixes.
+func hasKeyUnder(m metav1.ObjectMeta, prefixes []string) bool {
+	for _, keys := range []map[string]string{m.Labels, m.Annotations} {
+		for k := range keys {
+			for _, prefix := range prefixes {
+				if strings.HasPrefix(k, prefix) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// ownerToolOf is what owns s when the agent may not write it for that (nil: nothing does): its deployment tool
+// (toolOf), else another object (ownerReferences), else another tool (deployedBy).
+func ownerToolOf(s *corev1.Secret) *protocol.OwnerTool {
+	if s == nil {
+		return nil
+	}
+	if t := toolOf(s.ObjectMeta); t != nil {
+		return ptr(protocol.OwnerTool(*t))
+	}
+	switch {
+	case len(s.OwnerReferences) > 0:
+		return ptr(protocol.OwnerToolOwnerReference)
+	case deployedBy(s) != "":
+		return ptr(protocol.OwnerToolOther)
+	}
+	return nil
+}
 
 // deployedBy names the mark of another deployment tool on the secret ("" when none): an app.kubernetes.io/managed-by
 // label naming another tool than the agent (Helm sets "Helm"), Helm's release annotation, or a label or annotation of
@@ -371,12 +436,15 @@ func (g *group) site(secret *corev1.Secret, unreadable, annotations bool) protoc
 		SiteKey: g.key(),
 		Kind:    protocol.SiteK8sIngress,
 		Names:   g.names[:min(len(g.names), maxSiteNames)],
-		Secret:  &protocol.SecretRef{Namespace: g.namespace, Name: g.secret, Ingress: g.ingresses[0]},
+		Secret:  &protocol.SecretRef{Namespace: g.namespace, Name: g.secret, Ingress: g.ingresses[0], Ingresses: g.ingressRefs()},
 	}
 	if annotations {
 		s.Autopilot = g.autopilot()
 	}
 	s.Owner, s.Blocked = verdict(g, secret)
+	if s.Owner != nil && *s.Owner == protocol.OwnerOther {
+		s.OwnerTool = ownerToolOf(secret)
+	}
 	if unreadable && s.Blocked == nil {
 		s.Blocked = ptr(protocol.BlockedUnreadable)
 	}
@@ -386,6 +454,15 @@ func (g *group) site(secret *corev1.Secret, unreadable, annotations bool) protoc
 		}
 	}
 	return s
+}
+
+// ingressRefs are the first maxIngresses Ingresses of g by name, each with its deployment tool.
+func (g *group) ingressRefs() []protocol.IngressRef {
+	refs := make([]protocol.IngressRef, 0, min(len(g.ingresses), maxIngresses))
+	for _, name := range g.ingresses[:min(len(g.ingresses), maxIngresses)] {
+		refs = append(refs, protocol.IngressRef{Name: name, DeployedBy: g.tools[name]})
+	}
+	return refs
 }
 
 // uniqueAnnotations sorts by Ingress name, each Ingress once (it may name the secret in several tls entries).
