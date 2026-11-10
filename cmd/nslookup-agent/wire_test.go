@@ -320,7 +320,7 @@ func TestWireSamples(t *testing.T) {
 
 	kubeCluster := func(t *testing.T, annotate bool) kubernetes.Interface {
 		ca := newWireCA(t)
-		leaf, key, _ := ca.issue(t, "shop-tls", "shop.example.test", "www.shop.example.test")
+		leaf, key, _ := ca.issue(t, "shop-tls", "shop.example.test", "www.shop.example.test", "admin.shop.example.test")
 		class := "nginx"
 		ingress := func(ns, name string, tls []networkingv1.IngressTLS, hosts ...string) *networkingv1.Ingress {
 			ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}, Spec: networkingv1.IngressSpec{IngressClassName: &class, TLS: tls}}
