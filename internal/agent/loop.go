@@ -473,8 +473,9 @@ type fitted struct {
 
 // fit keeps a heartbeat carrying inv within maxHeartbeatBody, whatever the rest of the heartbeat (the facts, the
 // largest installed list the server takes): it empties the Ingress lists of the sites (display only), from the last
-// site back, then leaves out the names of the certificates the sites serve, likewise, then the last sites, until it fits; the sites the server assigns certificates to go last (their
-// certificate names only), never the sites themselves, which the server would pause as gone.
+// site back, then leaves out the names of the certificates the sites serve, likewise, then the last sites, until it
+// fits; the sites the server assigns certificates to go last (their certificate names only), never the sites
+// themselves, which the server would pause as gone.
 func (l *Loop) fit(inv *protocol.Inventory, keep map[string]bool) (fitted, error) {
 	var cut fitted
 	overhead, err := l.beatOverhead()
