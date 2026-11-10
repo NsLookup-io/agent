@@ -610,7 +610,8 @@ func TestMarshalBodySendsEmptyListsNeverNull(t *testing.T) {
 	}{
 		"heartbeat":  {HeartbeatRequest{}, []string{`"installed":[]`, `"webServers":[]`, `"inventory":null`, `"kubernetes":null`}},
 		"inventory":  {Inventory{}, []string{`"sites":[]`}},
-		"site":       {Site{}, []string{`"names":[]`, `"served":null`, `"secret":null`, `"blocked":null`}},
+		"site":       {Site{}, []string{`"names":[]`, `"served":null`, `"secret":null`, `"blocked":null`, `"ownerTool":null`}},
+		"secret ref": {SecretRef{}, []string{`"ingresses":[]`}},
 		"cert facts": {CertFacts{}, []string{`"names":[]`}},
 		"result":     {InstallResult{}, []string{`"steps":[]`, `"message":null`, `"servedLocally":null`}},
 		"join":       {JoinRequest{}, []string{`"name":null`, `"webServers":[]`}},

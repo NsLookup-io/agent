@@ -63,6 +63,27 @@ const (
 	OwnerOther       SiteOwner = "other"
 )
 
+// DeployTool is the deployment tool whose marks an Ingress carries.
+type DeployTool string
+
+const (
+	ToolFlux   DeployTool = "flux"
+	ToolArgoCD DeployTool = "argocd"
+	ToolHelm   DeployTool = "helm"
+)
+
+// OwnerTool is what owns a site's secret when another tool or object does (owner "other"): a deployment tool by its
+// marks, another object (ownerReferences), or another tool (any other app.kubernetes.io/managed-by).
+type OwnerTool string
+
+const (
+	OwnerToolFlux           OwnerTool = "flux"
+	OwnerToolArgoCD         OwnerTool = "argocd"
+	OwnerToolHelm           OwnerTool = "helm"
+	OwnerToolOwnerReference OwnerTool = "owner_reference"
+	OwnerToolOther          OwnerTool = "other"
+)
+
 // SiteBlocked is why the agent cannot install on a site.
 type SiteBlocked string
 
@@ -159,6 +180,8 @@ type Site struct {
 	Blocked     *SiteBlocked `json:"blocked"`
 	// Autopilot is what the Ingresses of the site's secret annotate (null: none does, or annotations are off).
 	Autopilot *SiteAutopilot `json:"autopilot"`
+	// OwnerTool is what owns the secret, only with owner "other" (null otherwise).
+	OwnerTool *OwnerTool `json:"ownerTool"`
 }
 
 // SiteAutopilot is the agent's report of the Autopilot annotations of the Ingresses using a site's secret: only the
@@ -182,11 +205,21 @@ const (
 	AnnotationAlertEmail = "autopilot.nslookup.io/alert-email"
 )
 
-// SecretRef names a Kubernetes TLS secret and the ingress using it.
+// SecretRef names a Kubernetes TLS secret and the Ingresses using it.
 type SecretRef struct {
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
-	Ingress   string `json:"ingress"`
+	// Ingress is the first Ingress using the secret by name: the one the site key names.
+	Ingress string `json:"ingress"`
+	// Ingresses are the Ingresses using the secret, sorted by name, each once, at most 200; [] means they were not sent,
+	// never that there is none.
+	Ingresses []IngressRef `json:"ingresses"`
+}
+
+// IngressRef is one Ingress using a secret and the deployment tool whose marks it carries (null: none known).
+type IngressRef struct {
+	Name       string      `json:"name"`
+	DeployedBy *DeployTool `json:"deployedBy"`
 }
 
 // Inventory is every site the agent found (at most 500).
@@ -328,6 +361,14 @@ func (s Site) MarshalJSON() ([]byte, error) {
 		s.Names = []string{}
 	}
 	return MarshalBody(plain(s))
+}
+
+func (r SecretRef) MarshalJSON() ([]byte, error) {
+	type plain SecretRef
+	if r.Ingresses == nil {
+		r.Ingresses = []IngressRef{}
+	}
+	return MarshalBody(plain(r))
 }
 
 func (i Inventory) MarshalJSON() ([]byte, error) {
