@@ -396,9 +396,9 @@ func (l *Loop) finish() error {
 			l.Log.Warn("this machine has more sites than the server takes; the rest are left out, never one the server assigns certificates to",
 				"sites", len(l.raw.Sites), "sent", maxSites)
 		}
-		if cut.names > 0 || cut.sites > 0 {
+		if cut.ingresses > 0 || cut.names > 0 || cut.sites > 0 {
 			l.Log.Warn("the list of sites is too large for one heartbeat; parts of it are left out",
-				"sitesWithoutCertificateNames", cut.names, "sitesLeftOut", cut.sites, "firstLeftOut", cut.first)
+				"sitesWithoutIngressList", cut.ingresses, "sitesWithoutCertificateNames", cut.names, "sitesLeftOut", cut.sites, "firstLeftOut", cut.first)
 		}
 	}
 	l.inv, l.invHash = &inv, hash
@@ -464,16 +464,16 @@ func (l *Loop) noteAssigned(items []protocol.Work) {
 	}
 }
 
-// fitted is what fit left out: the certificate names of names sites, and sites sites at the end (first names the
-// first of them).
+// fitted is what fit left out: the Ingress list of ingresses sites, the certificate names of names sites, and sites
+// sites at the end (first names the first of them).
 type fitted struct {
-	names, sites int
-	first        string
+	ingresses, names, sites int
+	first                   string
 }
 
 // fit keeps a heartbeat carrying inv within maxHeartbeatBody, whatever the rest of the heartbeat (the facts, the
-// largest installed list the server takes): it leaves out the names of the certificates the sites serve, from the last
-// site back, then the last sites, until it fits; the sites the server assigns certificates to go last (their
+// largest installed list the server takes): it empties the Ingress lists of the sites (display only), from the last
+// site back, then leaves out the names of the certificates the sites serve, likewise, then the last sites, until it fits; the sites the server assigns certificates to go last (their
 // certificate names only), never the sites themselves, which the server would pause as gone.
 func (l *Loop) fit(inv *protocol.Inventory, keep map[string]bool) (fitted, error) {
 	var cut fitted
@@ -494,6 +494,29 @@ func (l *Loop) fit(inv *protocol.Inventory, keep map[string]bool) (fitted, error
 	}
 	budget := maxHeartbeatBody - overhead
 	assigned := func(s protocol.Site) bool { return keep[s.SiteKey] }
+	// The Ingress lists, from the last site back, on a copy of the secret (the read itself is never edited).
+	dropIngresses := func() error {
+		for i := len(inv.Sites) - 1; i >= 0 && total > budget; i-- {
+			s := &inv.Sites[i]
+			if s.Secret == nil || len(s.Secret.Ingresses) == 0 {
+				continue
+			}
+			secret := *s.Secret
+			secret.Ingresses = nil
+			s.Secret = &secret
+			body, err := protocol.MarshalBody(*s)
+			if err != nil {
+				return err
+			}
+			total -= sizes[i] - len(body)
+			sizes[i] = len(body)
+			cut.ingresses++
+		}
+		return nil
+	}
+	if err := dropIngresses(); err != nil {
+		return cut, err
+	}
 	// The certificate names of the sites, from the last back: first of those the server assigns nothing to.
 	dropNames := func(ofAssigned bool) error {
 		for i := len(inv.Sites) - 1; i >= 0 && total > budget; i-- {

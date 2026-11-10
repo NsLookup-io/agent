@@ -649,6 +649,58 @@ func TestAnInventoryTooLargeForOneHeartbeatIsCut(t *testing.T) {
 	})
 }
 
+// A Kubernetes read whose Ingress lists alone are too large loses those lists first, from the last site back: every
+// site and every served certificate name stays, and the loop's own read is not edited.
+func TestATooLargeHeartbeatLosesIngressListsFirst(t *testing.T) {
+	const limit = 3<<20 + 1<<19
+	h := newHarness(t, 1)
+	h.sites = nil
+	for i := range 500 {
+		s := bigSite(i, 1, 5, 60)
+		s.Kind = protocol.SiteK8sIngress
+		s.CertPath = nil
+		ref := &protocol.SecretRef{Namespace: "web", Name: fmt.Sprintf("tls-%03d", i), Ingress: "ing-000"}
+		for j := range 200 {
+			ref.Ingresses = append(ref.Ingresses, protocol.IngressRef{Name: fmt.Sprintf("ing-%03d-%03d.%s", i, j, strings.Repeat("x", 40))})
+		}
+		s.Secret = ref
+		h.sites = append(h.sites, s)
+	}
+	if err := h.run(); err != nil {
+		t.Fatal(err)
+	}
+	inv := h.beats[0].Inventory
+	if inv == nil || len(inv.Sites) != 500 {
+		t.Fatalf("inventory %v", inv)
+	}
+	if size := beatSize(t, h.beats[0]); size > limit {
+		t.Errorf("heartbeat of %d bytes", size)
+	}
+	emptied := 0
+	for _, s := range inv.Sites {
+		if len(s.Served.Names) != 5 {
+			t.Fatalf("site %s lost certificate names", s.SiteKey)
+		}
+		if len(s.Secret.Ingresses) == 0 {
+			emptied++
+		}
+	}
+	if emptied == 0 || emptied == 500 || len(inv.Sites[0].Secret.Ingresses) != 200 || len(inv.Sites[499].Secret.Ingresses) != 0 {
+		t.Errorf("%d sites without an Ingress list; first has %d, last %d", emptied, len(inv.Sites[0].Secret.Ingresses), len(inv.Sites[499].Secret.Ingresses))
+	}
+	if body, err := protocol.MarshalBody(inv.Sites[499]); err != nil || !strings.Contains(string(body), `"ingresses":[]`) {
+		t.Errorf("last site: %s (%v)", body, err)
+	}
+	for _, s := range h.loop.raw.Sites {
+		if len(s.Secret.Ingresses) != 200 {
+			t.Fatalf("the raw read of %s was edited: %d Ingresses", s.SiteKey, len(s.Secret.Ingresses))
+		}
+	}
+	if !strings.Contains(h.logs.String(), fmt.Sprintf("sitesWithoutIngressList=%d", emptied)) {
+		t.Errorf("logs:\n%s", h.logs.String())
+	}
+}
+
 // manySites are n sites with keys 0, 1, ... (sorted by key).
 func manySites(n int) []protocol.Site {
 	sites := make([]protocol.Site, n)
