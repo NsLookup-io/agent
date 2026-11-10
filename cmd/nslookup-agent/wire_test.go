@@ -334,8 +334,19 @@ func TestWireSamples(t *testing.T) {
 		if annotate {
 			storefront.Annotations = map[string]string{protocol.AnnotationEnabled: "true", protocol.AnnotationCA: "ZeroSSL", protocol.AnnotationAlertEmail: "ops@example.test"}
 		}
+		// A second Ingress on the same secret, deployed by Flux, and a secret another tool owns.
+		admin := ingress("shop", "storefront-admin", []networkingv1.IngressTLS{{Hosts: []string{"admin.shop.example.test"}, SecretName: "shop-tls"}}, "admin.shop.example.test")
+		admin.Labels = map[string]string{"kustomize.toolkit.fluxcd.io/name": "shop"}
+		blog := ingress("web", "blog", []networkingv1.IngressTLS{{Hosts: []string{"blog.example.test"}, SecretName: "blog-tls"}}, "blog.example.test")
+		blogLeaf, blogKey, _ := ca.issue(t, "blog-tls", "blog.example.test")
 		return fake.NewClientset(
 			storefront,
+			admin,
+			blog,
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "web", Name: "blog-tls",
+				Labels: map[string]string{"app.kubernetes.io/managed-by": "Helm"}, Annotations: map[string]string{"meta.helm.sh/release-name": "blog"}},
+				Type: corev1.SecretTypeTLS,
+				Data: map[string][]byte{corev1.TLSCertKey: append(blogLeaf, ca.pem...), corev1.TLSPrivateKeyKey: blogKey}},
 			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "shop-tls"}, Type: corev1.SecretTypeTLS,
 				Data: map[string][]byte{corev1.TLSCertKey: append(leaf, ca.pem...), corev1.TLSPrivateKeyKey: key}},
 			// Served without TLS: a site whose secret the agent makes when it is taken over.
