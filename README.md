@@ -362,7 +362,14 @@ such as a mounted folder owned by your own user) is reported to the portal with 
 A Kubernetes agent reads the cluster's Ingresses (`networking.k8s.io/v1`), in every namespace or only in those of
 `--namespaces`, and the TLS secrets their `tls` entries name, each with a `get` (it never lists secrets). It sends, per
 secret, every name of every Ingress using it (Ingresses sharing a secret are one site), the namespace, the secret, the
-first Ingress and the facts of the certificate in its `tls.crt`; it never sends, logs or keeps a `tls.key`. A host an
+first Ingress, every Ingress using the secret (sorted by name, at most 200) and the facts of the certificate in its
+`tls.crt`; it never sends, logs or keeps a `tls.key`. For each of those Ingresses it also sends the tool its own labels
+or annotations name as deploying it: Flux (a label or annotation under `kustomize.toolkit.fluxcd.io/` or
+`helm.toolkit.fluxcd.io/`), Argo CD (one under `argocd.argoproj.io/`) or Helm (`app.kubernetes.io/managed-by: Helm` or
+the `meta.helm.sh/release-name` annotation), else nothing. For a secret it may not write, because another tool or object
+owns it, it also sends which one: Flux, Argo CD, Helm, another Kubernetes object (an owner reference) or another tool.
+If a heartbeat would be too large, the Ingress lists are left out first, before any certificate name or site. This
+needs no new permission: the agent already reads the Ingresses' labels and annotations and each secret. A host an
 Ingress serves without TLS is a site too: taking it over creates the secret named after the host, its dots as dashes
 and a leading `*` as `wildcard`, then `-tls` (`status.example.com` gets `status-example-com-tls`), which you then add
 to the Ingress's `tls` section. The agent never edits an Ingress.
